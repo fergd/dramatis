@@ -9,16 +9,40 @@ Drive live credential testing are the remaining gaps.
 
 **Repo:** `git@github.com:fergd/dramatis.git`, public, `main` branch,
 root commit `42e1256` pushed 2026-07-19.
-**Deployment host (planned):** `backupbox`, same as zamak-ledger, its own
-systemd service (`dramatis`) and port. **Memory blocker cleared** —
-backupbox was still on `graphical.target` with 185MB free RAM and swap
-100% full; switched to `multi-user.target` and rebooted 2026-07-19
-(confirmed all of the owner's actual workloads — zamak-ledger, the
-`photos-bu.sh`/`videos-bu.sh` cron backups, docker, Plex, tailscaled —
-run under `multi-user.target`, not `graphical.target`; only desktop-only
-units like `gdm` dropped). Now 1.8GB free, swap empty. Not yet deployed —
-still needs the systemd unit, `tailscale serve`, and an actual `git pull`
-on the host.
+**Deployed and live** on `backupbox` as of 2026-07-19:
+`systemctl status dramatis` → active, 35MB RSS. Reachable at
+`https://backupbox.tailfb9f14.ts.net:8421/` (own dedicated `tailscale
+serve --https=8421` endpoint, distinct from zamak's default-443 root
+path — confirmed both `/status` and `/` return 200 through the real
+HTTPS URL, not just localhost). Working dir `/home/christan/Projects/
+dramatis`, venv + deps installed, `.env` has the real `CLOUDINARY_URL`
+(reused from zamak, same as local dev).
+
+**Memory blocker cleared first** — backupbox was still on
+`graphical.target` with 185MB free RAM and swap 100% full; switched to
+`multi-user.target` and rebooted (confirmed all of the owner's actual
+workloads — zamak-ledger, the `photos-bu.sh`/`videos-bu.sh` cron backups,
+docker, Plex, tailscaled — run under `multi-user.target`, not
+`graphical.target`; only desktop-only units like `gdm` dropped). Now
+1.8GB free, swap empty.
+
+**One deploy bug hit and fixed:** the systemd unit's first version bound
+uvicorn to `0.0.0.0:8421` — but `tailscale serve --https=8421` makes
+`tailscaled` itself bind port 8421 *on the tailscale interface* to
+terminate HTTPS there before proxying to `127.0.0.1:8421`. Binding
+`0.0.0.0` includes that same interface, so uvicorn and tailscaled fought
+over the same port and the service sat in an `activating (auto-restart)`
+crash loop (`journalctl` showed `[Errno 98] address already in use`).
+Zamak never hits this because it uses `tailscale serve`'s default port
+443, not a dedicated `--https=` port. Fixed by binding uvicorn to
+`127.0.0.1` only — also the more correct choice regardless, since
+`tailscale serve` should be the only public-facing entry point.
+
+`sudo` was required for `systemctl daemon-reload`/`enable`/`restart` and
+for the `multi-user.target` reboot — those two steps needed the owner to
+run the commands directly (password not available/appropriate to
+automate). Everything else — `git clone`, venv setup, `.env`, and
+`tailscale serve` configuration itself — needed no elevated privilege.
 
 ## What this is
 
@@ -248,5 +272,7 @@ syntax-checked but not re-clicked-through afterward.
       locally, copy `token.json`, confirm a debounced backup lands in the
       "Character Profile App" folder).
 - [x] ~~`git init`, first commit~~ — done 2026-07-19, root commit
-      `42e1256` on `main`, 10 files, clean working tree.
-- [ ] Deploy to backupbox per README (systemd unit, `tailscale serve`).
+      `42e1256` on `main`, pushed to `github.com/fergd/dramatis` (public).
+- [x] ~~Deploy to backupbox~~ — done 2026-07-19, see "Deployed and live"
+      above. Confirmed via the real `tailscale serve` HTTPS URL, not just
+      localhost, per the deploy-loop guidance in §12/README.
