@@ -1,11 +1,12 @@
 # Dramatis — Project Handoff
 
-**Point in time:** 2026-07-19, initial build from `BRIEF.md` plus a
-high-fidelity design handoff (`Dramatis.dc.html` + its own `README.md`,
-bundled as `Character Profile Builder.zip`). Scaffold through backup are
-all built and have now been visually verified end-to-end in a real
-Chrome session (see "Verified so far" below) — Cloudinary and Google
-Drive live credential testing are the remaining gaps.
+**Point in time:** 2026-07-19. Built from `BRIEF.md` plus a high-fidelity
+design handoff (`Dramatis.dc.html` + its own `README.md`, bundled as
+`Character Profile Builder.zip`), visually verified end-to-end in a real
+Chrome session, live-tested against a real Cloudinary account, and
+**deployed and running on backupbox** — see "Deployed and live" and
+"Verified so far" below. Google Drive backup was deliberately deferred by
+the owner (see "Known gaps"), not left unfinished.
 
 **Repo:** `git@github.com:fergd/dramatis.git`, public, `main` branch,
 root commit `42e1256` pushed 2026-07-19.
@@ -247,10 +248,15 @@ syntax-checked but not re-clicked-through afterward.
    Cloudinary's own `secure_url` from upload. Fixed by adding
    `secure=True` to the `build_url()` call; re-verified both derived URLs
    now return `https://` and are reachable.
-2. **Google Drive is still untested live** — no OAuth client was set up
-   this session. Same failure-path verification as before (clean 400s
-   when unconfigured) but the real `--authorize` → `token.json` →
-   debounced-backup-lands-in-Drive-folder flow has not been run.
+2. **Google Drive backup deliberately deferred by the owner** (2026-07-19)
+   — not an oversight, a decision: portraits already live durably in
+   Cloudinary, and the remaining text data (fields/characters/
+   relationships) is low-stakes enough that automated Drive backup isn't
+   worth the setup right now. The code path is fully built and its
+   failure mode is verified safe (clean 400s when unconfigured, app never
+   blocks), so this can be turned on later at any time by following the
+   README's Google Drive setup section — no code changes needed, just
+   `.env` values and the one-time `--authorize` step.
 3. ~~Not yet a git repository~~ — done, see below.
 3. ~~True mobile-width layout wasn't visually confirmed~~ — confirmed in
    a follow-up session at ~606px width (the closest this environment's
@@ -268,9 +274,10 @@ syntax-checked but not re-clicked-through afterward.
 - [ ] Live-test Cloudinary upload/replace/delete with a real account —
       the portrait drop zone and thumbnail strip were never exercised
       with a real image this session (no credentials available).
-- [ ] Live-test the Google Drive OAuth flow end-to-end (`--authorize`
-      locally, copy `token.json`, confirm a debounced backup lands in the
-      "Character Profile App" folder).
+- [ ] Google Drive backup — deliberately deferred (see "Known gaps"
+      above), not currently planned. Revisit if the text data ever feels
+      worth automated backup; the code is ready, just needs `.env` +
+      `--authorize`.
 - [x] ~~`git init`, first commit~~ — done 2026-07-19, root commit
       `42e1256` on `main`, pushed to `github.com/fergd/dramatis` (public).
 - [x] ~~Deploy to backupbox~~ — done 2026-07-19, see "Deployed and live"
