@@ -7,10 +7,18 @@ all built and have now been visually verified end-to-end in a real
 Chrome session (see "Verified so far" below) — Cloudinary and Google
 Drive live credential testing are the remaining gaps.
 
-**Repo:** not yet a git repository. `git init` and an initial commit are
-still needed before anything can be pushed/deployed.
+**Repo:** `git@github.com:fergd/dramatis.git`, public, `main` branch,
+root commit `42e1256` pushed 2026-07-19.
 **Deployment host (planned):** `backupbox`, same as zamak-ledger, its own
-systemd service (`dramatis`) and port. Not yet deployed.
+systemd service (`dramatis`) and port. **Memory blocker cleared** —
+backupbox was still on `graphical.target` with 185MB free RAM and swap
+100% full; switched to `multi-user.target` and rebooted 2026-07-19
+(confirmed all of the owner's actual workloads — zamak-ledger, the
+`photos-bu.sh`/`videos-bu.sh` cron backups, docker, Plex, tailscaled —
+run under `multi-user.target`, not `graphical.target`; only desktop-only
+units like `gdm` dropped). Now 1.8GB free, swap empty. Not yet deployed —
+still needs the systemd unit, `tailscale serve`, and an actual `git pull`
+on the host.
 
 ## What this is
 
@@ -198,23 +206,38 @@ syntax-checked but not re-clicked-through afterward.
 
 ## Known gaps — needs the owner's follow-up
 
-1. **Cloudinary and Google Drive are untested live** — no real
-   credentials were available in the build environment. Failure paths
-   (unconfigured) are verified; the actual upload/destroy/backup/restore
-   round-trips against real APIs are not. Test these once `.env` has real
-   values.
-2. **Not yet a git repository, not yet deployed to backupbox.** Both are
-   next steps once the above is confirmed working.
-3. **True mobile-width layout (~375-390px) wasn't visually confirmed
-   this session** — `resize_window` didn't reliably control this
-   environment's actual CSS viewport (requests were sometimes ignored,
-   sometimes landed at an unrelated width), and an earlier ~520px-wide
-   accidental viewport did show the header's mobile breakpoint (search
-   input dropping to a full-width row) firing correctly, but the
-   two-column-to-one-column collapse in the detail view specifically
-   was not seen at true phone width. The CSS uses standard `flex-wrap`/
-   `auto-fill` patterns that should degrade gracefully, but worth a
-   real phone or devtools-emulation check.
+1. ~~Cloudinary untested live~~ — verified 2026-07-19 against the real
+   `fergd` Cloudinary account (reused from zamak-ledger, separate `dramatis/`
+   folder namespace, no collision — confirmed zero cross-contamination).
+   Full lifecycle confirmed against the live API: upload, second image
+   correctly not becoming primary, deleting the primary promotes the next
+   image, character delete cascades to destroy all Cloudinary assets (not
+   just DB rows — confirmed via a direct fetch of the deleted asset's URL
+   returning 404), zero orphaned resources left behind afterward (checked
+   via `cloudinary.api.resources`). **Found and fixed a real bug in the
+   process:** `derived_url()` in `cloudinary_images.py` was building plain
+   `http://` URLs — `cloudinary.CloudinaryImage(...).build_url()` doesn't
+   default to secure, and nothing was passing `secure=True`. All API
+   responses (card thumbnails, detail images, thumbnail strip) were
+   serving over http despite the raw stored column correctly holding
+   Cloudinary's own `secure_url` from upload. Fixed by adding
+   `secure=True` to the `build_url()` call; re-verified both derived URLs
+   now return `https://` and are reachable.
+2. **Google Drive is still untested live** — no OAuth client was set up
+   this session. Same failure-path verification as before (clean 400s
+   when unconfigured) but the real `--authorize` → `token.json` →
+   debounced-backup-lands-in-Drive-folder flow has not been run.
+3. ~~Not yet a git repository~~ — done, see below.
+3. ~~True mobile-width layout wasn't visually confirmed~~ — confirmed in
+   a follow-up session at ~606px width (the closest this environment's
+   `resize_window` would reliably give): header wraps cleanly with no
+   overflow, the detail view's two-column layout collapses to one column,
+   and the Identity field grid auto-fits down to fewer columns rather
+   than a fixed breakpoint (same `auto-fit, minmax(160px,1fr)` behavior
+   the design itself uses). Not tested below ~600px or on a real device —
+   worth a quick real-phone glance before considering this fully done,
+   but the underlying CSS techniques are standard enough that risk here
+   is low.
 
 ## Outstanding / possible next steps
 
@@ -224,5 +247,6 @@ syntax-checked but not re-clicked-through afterward.
 - [ ] Live-test the Google Drive OAuth flow end-to-end (`--authorize`
       locally, copy `token.json`, confirm a debounced backup lands in the
       "Character Profile App" folder).
-- [ ] Confirm true mobile-width layout on a real phone (see gap #3 above).
-- [ ] `git init`, first commit, deploy to backupbox per README.
+- [x] ~~`git init`, first commit~~ — done 2026-07-19, root commit
+      `42e1256` on `main`, 10 files, clean working tree.
+- [ ] Deploy to backupbox per README (systemd unit, `tailscale serve`).

@@ -67,5 +67,5 @@ def derived_url(public_id: Optional[str], width: int = 800) -> Optional[str]:
     if not public_id:
         return None
     return cloudinary.CloudinaryImage(public_id).build_url(
-        width=width, crop="limit", quality="auto", fetch_format="auto"
+        width=width, crop="limit", quality="auto", fetch_format="auto", secure=True
     )
