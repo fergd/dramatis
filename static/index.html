@@ -1,0 +1,1019 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dramatis</title>
+<link rel="icon" href="data:,">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Serif:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg:#141413; --panel:#1c1c1a; --panel2:#232320; --ink:#f0eeea; --muted:#9a968d;
+  --line:#33322e; --chip:#2a2a26; --accent:#b3ad9f; --scrim:rgba(0,0,0,.62);
+  --hf:'IBM Plex Serif',Georgia,serif;
+  --danger:#c86a5f; --amber:#c99a3a; --green:#7a9a5b;
+}
+* { box-sizing: border-box; }
+body { margin: 0; }
+input, textarea, select, button { font: inherit; color: inherit; }
+input:focus, textarea:focus, select:focus { outline: none; border-color: var(--accent); }
+::placeholder { color: var(--muted); opacity: .65; }
+textarea { resize: vertical; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: var(--line); border-radius: 8px; }
+@keyframes drin { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+
+body {
+  min-height: 100vh; background: var(--bg); color: var(--ink);
+  font-family: 'IBM Plex Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---------- header ---------- */
+header {
+  position: sticky; top: 0; z-index: 30; display: flex; align-items: center; gap: 14px;
+  flex-wrap: wrap; padding: 13px 20px; background: var(--panel); border-bottom: 1px solid var(--line);
+}
+.wordmark { display: flex; align-items: baseline; gap: 11px; margin-right: auto; cursor: pointer; }
+.wordmark span:first-child { font-family: var(--hf); font-size: 23px; font-weight: 600; letter-spacing: .01em; font-style: italic; }
+.wordmark span:last-child { font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: var(--muted); }
+#search-input { width: min(260px, 50vw); padding: 8px 12px; background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; font-size: 14px; }
+.theme-toggle { display: flex; gap: 2px; padding: 3px; background: var(--panel2); border: 1px solid var(--line); border-radius: 9px; }
+.theme-toggle button { border: none; padding: 6px 11px; border-radius: 6px; cursor: pointer; font-size: 12px; font-family: 'IBM Plex Mono', monospace; background: transparent; color: var(--muted); }
+.theme-toggle button.active { background: var(--ink); color: var(--bg); }
+.btn-solid { border: 1px solid var(--ink); background: var(--ink); color: var(--bg); padding: 9px 15px; border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 600; }
+.btn-line { border: 1px solid var(--line); background: var(--panel); padding: 9px 13px; border-radius: 8px; cursor: pointer; font-size: 13px; }
+#backup-btn { display: inline-flex; align-items: center; gap: 7px; }
+.dot { width: 9px; height: 9px; border-radius: 50%; flex: none; background: var(--amber); }
+.dot.backed { background: var(--green); }
+
+/* ---------- tag filter row ---------- */
+#tagrow { display: flex; gap: 7px; flex-wrap: wrap; padding: 11px 20px; background: var(--panel2); border-bottom: 1px solid var(--line); }
+#tagrow:empty { display: none; border-bottom: none; }
+.tag-chip { border: 1px solid var(--line); padding: 5px 11px; border-radius: 20px; cursor: pointer; font-size: 12px; font-family: 'IBM Plex Mono', monospace; background: var(--panel); color: var(--muted); }
+.tag-chip.active { background: var(--ink); color: var(--bg); }
+
+/* ---------- main / grid ---------- */
+main { padding: 0 20px 70px; }
+.banner-warn { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 16px 0 2px; padding: 11px 15px; background: var(--panel2); border: 1px solid var(--line); border-left: 3px solid var(--amber); border-radius: 9px; }
+.banner-warn span { font-size: 13px; color: var(--muted); }
+.banner-warn strong { color: var(--ink); }
+.banner-warn button { margin-left: auto; border: 1px solid var(--line); background: var(--panel); padding: 7px 13px; border-radius: 8px; cursor: pointer; font-size: 12.5px; }
+.gridgap { height: 22px; }
+
+.empty-state { max-width: 460px; margin: 11vh auto; text-align: center; }
+.empty-state .title { font-family: var(--hf); font-size: 30px; margin-bottom: 10px; font-style: italic; }
+.empty-state p { color: var(--muted); line-height: 1.6; margin: 0 0 22px; }
+
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 18px; }
+
+.card-btn { background: none; border: none; padding: 0; margin: 0; cursor: pointer; display: block; width: 100%; text-align: left; animation: drin .3s ease both; }
+.card {
+  position: relative; border: 1px solid var(--line); border-radius: 13px; overflow: hidden; background: var(--panel);
+  box-shadow: 0 1px 2px rgba(0,0,0,.2), 0 12px 30px -20px rgba(0,0,0,.8);
+  transition: transform .16s ease, box-shadow .16s ease;
+}
+@media (hover: hover) {
+  .card-btn:hover .card { transform: translateY(-4px); box-shadow: 0 14px 40px -16px rgba(0,0,0,.75); }
+}
+.card-portrait { position: relative; aspect-ratio: 3/4; background: var(--panel2); }
+.card-portrait img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.card-placeholder { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; background: repeating-linear-gradient(135deg, var(--panel2), var(--panel2) 11px, var(--chip) 11px, var(--chip) 12px); }
+.card-placeholder span { font-family: var(--hf); font-size: 62px; color: var(--muted); opacity: .55; }
+.card-frame { position: absolute; inset: 6px; border: 1px solid rgba(255,255,255,.1); border-radius: 9px; pointer-events: none; }
+.card-num { position: absolute; top: 11px; left: 13px; font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: .1em; color: #fff; text-shadow: 0 1px 4px rgba(0,0,0,.8); }
+.card-species { position: absolute; top: 9px; right: 9px; font-family: 'IBM Plex Mono', monospace; font-size: 10px; text-transform: uppercase; letter-spacing: .06em; padding: 4px 8px; border-radius: 20px; background: rgba(0,0,0,.55); color: #fff; backdrop-filter: blur(4px); max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card-scrim { position: absolute; left: 0; right: 0; bottom: 0; padding: 30px 13px 11px; background: linear-gradient(to top, var(--scrim), transparent); }
+.card-name { font-family: var(--hf); font-size: 20px; font-weight: 600; color: #fff; line-height: 1.1; text-shadow: 0 1px 5px rgba(0,0,0,.7); }
+.card-age { font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: rgba(255,255,255,.85); margin-top: 3px; letter-spacing: .03em; }
+.card-accentbar { height: 3px; width: 100%; }
+.card-info { display: flex; align-items: center; gap: 8px; padding: 10px 13px; border-top: 1px solid var(--line); min-height: 22px; }
+.card-info span:first-child { font-size: 12.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.card-dot { margin-left: auto; width: 9px; height: 9px; border-radius: 50%; flex: none; }
+
+/* ---------- detail view ---------- */
+.detail-shell { max-width: 1120px; margin: 0 auto; padding: 20px 20px 90px; }
+.detail-topbar { display: flex; align-items: center; gap: 12px; margin-bottom: 22px; }
+.detail-topbar .num { font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: var(--muted); }
+.detail-topbar .delete-btn { margin-left: auto; color: var(--danger); }
+.detail-cols { display: flex; flex-wrap: wrap; gap: 30px; align-items: flex-start; }
+.detail-left { flex: 1 1 300px; min-width: min(300px, 100%); max-width: 360px; }
+.detail-portrait { position: relative; aspect-ratio: 3/4; border: 1px solid var(--line); border-radius: 13px; overflow: hidden; background: var(--panel2); }
+.detail-portrait img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.detail-portrait .card-placeholder span { font-size: 90px; }
+.detail-accentbar { position: absolute; left: 0; right: 0; bottom: 0; height: 5px; }
+#thumb-strip { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.thumb { position: relative; width: 60px; height: 78px; border-radius: 7px; overflow: hidden; border: 2px solid transparent; cursor: pointer; }
+.thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.thumb .remove-x { position: absolute; top: 2px; right: 2px; width: 17px; height: 17px; border: none; border-radius: 50%; background: rgba(0,0,0,.6); color: #fff; font-size: 11px; line-height: 1; cursor: pointer; padding: 0; }
+.thumb-add { width: 60px; height: 78px; border: 1px dashed var(--line); border-radius: 7px; display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--muted); font-size: 24px; background: var(--panel); }
+.thumb-hint { font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: var(--muted); margin: 9px 2px 0; line-height: 1.5; }
+
+.detail-right { flex: 3 1 380px; min-width: min(300px, 100%); }
+#name-input { width: 100%; font-family: var(--hf); font-size: 34px; font-weight: 600; background: none; border: none; border-bottom: 2px solid var(--accent); padding: 2px 0 8px; }
+#tag-row { display: flex; flex-wrap: wrap; gap: 7px; margin: 14px 0 22px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; background: var(--chip); border-radius: 20px; padding: 4px 6px 4px 11px; font-size: 12px; font-family: 'IBM Plex Mono', monospace; }
+.chip button { border: none; background: none; cursor: pointer; color: var(--muted); font-size: 14px; line-height: 1; padding: 0; }
+#tag-input { width: 90px; background: none; border: 1px dashed var(--line); border-radius: 20px; padding: 5px 11px; font-size: 12px; font-family: 'IBM Plex Mono', monospace; }
+
+.field-section { margin-bottom: 26px; }
+.field-section h3 { font-family: 'IBM Plex Mono', monospace; font-size: 11px; text-transform: uppercase; letter-spacing: .12em; color: var(--accent); margin: 0 0 14px; padding-bottom: 7px; border-bottom: 1px solid var(--line); font-weight: 500; }
+.fields-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 14px; }
+.fields-grid .span-all { grid-column: 1 / -1; }
+.field-label { display: block; font-family: 'IBM Plex Mono', monospace; font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin-bottom: 5px; }
+.field-input, .field-select { width: 100%; padding: 9px 12px; background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; font-size: 14px; }
+.field-textarea { width: 100%; padding: 10px 12px; background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; line-height: 1.6; font-size: 14px; }
+.color-row { display: flex; align-items: center; gap: 10px; }
+.color-row input[type=color] { width: 46px; height: 34px; padding: 0; border: 1px solid var(--line); border-radius: 8px; background: none; cursor: pointer; }
+.color-row .hexval { font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: var(--muted); }
+.color-row .clear-link { border: none; background: none; cursor: pointer; color: var(--muted); font-size: 12px; text-decoration: underline; padding: 0; }
+
+.rel-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 9px; align-items: center; }
+.rel-row select { flex: 1 1 150px; padding: 9px 10px; background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; font-size: 13px; }
+.rel-row input { flex: 2 1 180px; padding: 9px 12px; background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; font-size: 13px; }
+.rel-row .rel-remove { border: 1px solid var(--line); background: var(--panel); width: 34px; height: 34px; border-radius: 8px; cursor: pointer; color: var(--muted); flex: none; }
+.add-rel-btn { border: 1px dashed var(--line); background: none; padding: 8px 14px; border-radius: 8px; cursor: pointer; font-size: 13px; color: var(--muted); margin-top: 4px; }
+.detail-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.detail-hint { font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: var(--muted); margin: 12px 0 0; line-height: 1.5; }
+
+/* ---------- modals ---------- */
+.modal-scrim { position: fixed; inset: 0; z-index: 50; background: rgba(0,0,0,.55); display: flex; align-items: center; justify-content: center; padding: 20px; }
+.modal-box { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 24px; animation: drin .2s ease both; }
+.modal-box h2 { font-family: var(--hf); font-size: 22px; margin: 0 0 4px; font-style: italic; font-weight: 600; }
+.modal-box .lede { color: var(--muted); font-size: 12.5px; margin: 0 0 18px; }
+.modal-label { display: block; font-family: 'IBM Plex Mono', monospace; font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin-bottom: 5px; }
+.modal-input, .modal-select, .modal-textarea { width: 100%; padding: 10px 12px; background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; margin-bottom: 16px; font-size: 14px; }
+.type-btn-row { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 16px; }
+.type-btn { border: 1px solid var(--line); background: var(--panel2); color: var(--ink); padding: 8px 12px; border-radius: 8px; cursor: pointer; font-size: 12.5px; }
+.type-btn.active { border-color: var(--ink); background: var(--ink); color: var(--bg); }
+.modal-actions-end { display: flex; gap: 10px; justify-content: flex-end; }
+
+.mf-row { display: flex; align-items: center; gap: 8px; background: var(--panel2); border: 1px solid var(--line); border-radius: 9px; padding: 8px 10px; }
+.mf-order { display: flex; flex-direction: column; gap: 1px; }
+.mf-order button { border: none; background: none; cursor: pointer; color: var(--muted); font-size: 10px; line-height: 1; padding: 1px; }
+.mf-order button:disabled { opacity: .3; cursor: default; }
+.mf-label-input { flex: 1; padding: 7px 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 7px; font-size: 13px; }
+.mf-label-static { flex: 1; font-size: 13.5px; }
+.mf-type { font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: var(--muted); text-transform: uppercase; background: var(--chip); padding: 3px 8px; border-radius: 20px; }
+.mf-builtin { font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: var(--muted); width: 52px; text-align: center; }
+.mf-delete { border: 1px solid var(--line); background: var(--panel); width: 52px; padding: 6px 0; border-radius: 7px; cursor: pointer; color: var(--danger); font-size: 12px; }
+
+@media (max-width: 640px) {
+  header { padding: 11px 14px; }
+  #search-input { width: 100%; order: 4; }
+  main, .detail-shell { padding-left: 14px; padding-right: 14px; }
+}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wordmark" id="wordmark"><span>Dramatis</span><span id="char-count"></span></div>
+  <input id="search-input" placeholder="Search name, role, species, tag…">
+  <div class="theme-toggle" id="theme-toggle"></div>
+  <button class="btn-solid" id="new-btn">+ New</button>
+  <button class="btn-line" id="backup-btn" title="Backup status"><span class="dot" id="backup-dot"></span>Backup</button>
+</header>
+
+<div id="tagrow"></div>
+
+<main id="main-content"></main>
+
+<div id="modal-root"></div>
+
+<script>
+const THEMES = {
+  noir:    { label: 'Noir', vars: { '--bg':'#141413','--panel':'#1c1c1a','--panel2':'#232320','--ink':'#f0eeea','--muted':'#9a968d','--line':'#33322e','--chip':'#2a2a26','--accent':'#b3ad9f','--scrim':'rgba(0,0,0,.62)' } },
+  atlas:   { label: 'Atlas', vars: { '--bg':'#efece4','--panel':'#faf8f2','--panel2':'#f2eee5','--ink':'#211f1a','--muted':'#6f6a5f','--line':'#ddd6c7','--chip':'#e7e2d5','--accent':'#7a7267','--scrim':'rgba(20,18,14,.58)' } },
+  archive: { label: 'Archive', vars: { '--bg':'#eceef0','--panel':'#ffffff','--panel2':'#f3f5f7','--ink':'#1c1f22','--muted':'#697077','--line':'#d8dde1','--chip':'#e6eaed','--accent':'#6b747c','--scrim':'rgba(15,18,20,.55)' } },
+};
+const TYPE_LABELS = { text: 'Short text', textarea: 'Paragraph', number: 'Number', select: 'Select', date: 'Date', color: 'Colour' };
+const SECTION_ORDER = ['Identity', 'Description', 'Notes', 'Custom'];
+
+let STATE = {
+  fields: [], characters: [], status: null,
+  theme: localStorage.getItem('dramatis.theme') || 'noir',
+  view: 'grid', selectedId: null, selectedDetail: null,
+  search: '', activeTag: null,
+};
+
+// ---------------------------------------------------------------- helpers
+
+function escapeHtml(s) {
+  if (s === null || s === undefined) return '';
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function isValidColor(v) { return typeof v === 'string' && /^#[0-9a-fA-F]{3,8}$/.test(v.trim()); }
+function initials(name) {
+  const p = (name || '').trim().split(/\s+/).filter(Boolean);
+  if (!p.length) return '?';
+  return (p[0][0] + (p[1] ? p[1][0] : '')).toUpperCase();
+}
+
+async function api(method, path, body) {
+  const opts = { method, headers: {} };
+  if (body instanceof FormData) {
+    opts.body = body;
+  } else if (body !== undefined) {
+    opts.headers['Content-Type'] = 'application/json';
+    opts.body = JSON.stringify(body);
+  }
+  const res = await fetch(path, opts);
+  if (!res.ok) {
+    let detail = res.statusText;
+    try { detail = (await res.json()).detail || detail; } catch (e) {}
+    throw new Error(detail);
+  }
+  if (res.status === 204) return null;
+  return res.json();
+}
+
+function applyTheme(id) {
+  const t = THEMES[id] || THEMES.noir;
+  const el = document.documentElement;
+  Object.entries(t.vars).forEach(([k, v]) => el.style.setProperty(k, v));
+  STATE.theme = id;
+  localStorage.setItem('dramatis.theme', id);
+  renderThemeToggle();
+}
+
+// ---------------------------------------------------------------- header (built once, updated in place)
+
+function buildHeaderOnce() {
+  document.getElementById('wordmark').addEventListener('click', () => goGrid());
+  const search = document.getElementById('search-input');
+  search.addEventListener('input', e => { STATE.search = e.target.value; renderGridResults(); });
+  document.getElementById('new-btn').addEventListener('click', createNewCharacter);
+  document.getElementById('backup-btn').addEventListener('click', openBackupModal);
+  renderThemeToggle();
+}
+
+function renderThemeToggle() {
+  const el = document.getElementById('theme-toggle');
+  el.innerHTML = Object.keys(THEMES).map(id =>
+    `<button class="${STATE.theme === id ? 'active' : ''}" data-theme="${id}">${THEMES[id].label}</button>`
+  ).join('');
+  el.querySelectorAll('button').forEach(btn => {
+    btn.addEventListener('click', () => applyTheme(btn.dataset.theme));
+  });
+}
+
+function updateCharCount() {
+  const n = STATE.characters.length;
+  document.getElementById('char-count').textContent = n + (n === 1 ? ' character' : ' characters');
+}
+
+function updateBackupDot() {
+  const backed = !!(STATE.status && STATE.status.last_backup_at);
+  const dot = document.getElementById('backup-dot');
+  dot.className = 'dot' + (backed ? ' backed' : '');
+  document.getElementById('backup-btn').title = backed
+    ? 'Last backup: ' + new Date(STATE.status.last_backup_at).toLocaleString()
+    : 'Not backed up yet';
+}
+
+// ---------------------------------------------------------------- boot / routing
+
+window.addEventListener('DOMContentLoaded', async () => {
+  buildHeaderOnce();
+  applyTheme(STATE.theme);
+  try {
+    STATE.fields = await api('GET', '/fields');
+  } catch (e) {
+    document.getElementById('main-content').innerHTML = `<div class="empty-state"><div class="title">Can't reach the server</div><p>${escapeHtml(e.message)}</p></div>`;
+    return;
+  }
+  await loadStatus();
+  await goGrid();
+});
+
+async function loadStatus() {
+  try { STATE.status = await api('GET', '/status'); } catch (e) { STATE.status = null; }
+  updateBackupDot();
+}
+
+async function goGrid() {
+  STATE.view = 'grid';
+  STATE.selectedId = null;
+  STATE.selectedDetail = null;
+  try {
+    STATE.characters = await api('GET', '/characters');
+  } catch (e) {
+    document.getElementById('main-content').innerHTML = `<div class="empty-state"><div class="title">Could not load characters</div><p>${escapeHtml(e.message)}</p></div>`;
+    return;
+  }
+  updateCharCount();
+  renderTagRow();
+  renderGridView();
+}
+
+async function goDetail(id) {
+  STATE.view = 'detail';
+  STATE.selectedId = id;
+  document.getElementById('main-content').innerHTML = `<div class="empty-state"><div class="title">Loading…</div></div>`;
+  try {
+    // Refresh the character list too — it drives the collection number and
+    // the relationship-target dropdown, both of which need current names,
+    // not whatever was cached from the last gallery visit.
+    [STATE.selectedDetail, STATE.characters] = await Promise.all([
+      api('GET', `/characters/${id}`),
+      api('GET', '/characters'),
+    ]);
+  } catch (e) {
+    document.getElementById('main-content').innerHTML = `<div class="empty-state"><div class="title">Could not load this character</div><p>${escapeHtml(e.message)}</p></div>`;
+    return;
+  }
+  updateCharCount();
+  renderDetailView();
+}
+
+async function createNewCharacter() {
+  try {
+    const c = await api('POST', '/characters', { name: '' });
+    await goDetail(c.id);
+  } catch (e) {
+    alert('Could not create character: ' + e.message);
+  }
+}
+
+// ---------------------------------------------------------------- tag row (gallery only)
+
+function renderTagRow() {
+  const el = document.getElementById('tagrow');
+  if (STATE.view !== 'grid') { el.innerHTML = ''; return; }
+  const tagSet = [];
+  STATE.characters.forEach(c => (c.tags || []).forEach(t => { if (!tagSet.includes(t)) tagSet.push(t); }));
+  if (tagSet.length === 0) { el.innerHTML = ''; return; }
+  const chips = [{ label: 'All', key: null }, ...tagSet.map(t => ({ label: t, key: t }))];
+  el.innerHTML = chips.map(t =>
+    `<button class="tag-chip ${STATE.activeTag === t.key ? 'active' : ''}" data-key="${t.key === null ? '' : escapeHtml(t.key)}">${escapeHtml(t.label)}</button>`
+  ).join('');
+  el.querySelectorAll('.tag-chip').forEach((btn, i) => {
+    btn.addEventListener('click', () => { STATE.activeTag = chips[i].key; renderTagRow(); renderGridResults(); });
+  });
+}
+
+// ---------------------------------------------------------------- grid view
+
+function renderGridView() {
+  const main = document.getElementById('main-content');
+  main.innerHTML = `
+    <div id="backup-banner"></div>
+    <div class="gridgap"></div>
+    <div id="grid-results"></div>`;
+  renderGridResults();
+}
+
+function filteredCharacters() {
+  const q = STATE.search.trim().toLowerCase();
+  return STATE.characters
+    .map((c, i) => ({ c, num: '№ ' + String(i + 1).padStart(3, '0') }))
+    .filter(({ c }) => {
+      if (STATE.activeTag && !(c.tags || []).includes(STATE.activeTag)) return false;
+      if (!q) return true;
+      const hay = [c.name, c.role_archetype, c.species_race, ...(c.tags || [])].join(' ').toLowerCase();
+      return hay.includes(q);
+    });
+}
+
+function renderGridResults() {
+  if (STATE.view !== 'grid') return;
+  const banner = document.getElementById('backup-banner');
+  const backed = !!(STATE.status && STATE.status.last_backup_at);
+  banner.innerHTML = (!backed && STATE.characters.length > 0) ? `
+    <div class="banner-warn">
+      <span>Not yet backed up to Google Drive — back up to your <strong>“Character Profile App”</strong> folder.</span>
+      <button id="banner-backup-btn">Back up now</button>
+    </div>` : '';
+  if (banner.querySelector('#banner-backup-btn')) {
+    banner.querySelector('#banner-backup-btn').addEventListener('click', openBackupModal);
+  }
+
+  const results = filteredCharacters();
+  const empty = STATE.characters.length === 0;
+  const el = document.getElementById('grid-results');
+
+  if (results.length === 0) {
+    el.innerHTML = `
+      <div class="empty-state">
+        <div class="title">${empty ? 'No cast yet' : 'No matches'}</div>
+        <p>${empty ? 'Build your first character — add a portrait, fill in the fields, invent your own along the way.' : 'Try a different search term or clear the active tag.'}</p>
+        ${empty ? `<button class="btn-solid" id="empty-new-btn" style="padding:11px 20px;border-radius:9px">Create your first character</button>` : ''}
+      </div>`;
+    if (empty) el.querySelector('#empty-new-btn').addEventListener('click', createNewCharacter);
+    return;
+  }
+
+  el.innerHTML = `<div class="grid">${results.map(({ c, num }) => cardHTML(c, num)).join('')}</div>`;
+  el.querySelectorAll('.card-btn').forEach(btn => {
+    btn.addEventListener('click', () => goDetail(Number(btn.dataset.id)));
+  });
+}
+
+function cardHTML(c, num) {
+  const acc = isValidColor(c.accent_colour) ? c.accent_colour : 'var(--accent)';
+  const portrait = c.portrait_url
+    ? `<img src="${escapeHtml(c.portrait_url)}" alt="" loading="lazy">`
+    : `<div class="card-placeholder"><span>${escapeHtml(initials(c.name))}</span></div>`;
+  const ageLine = c.age ? `<div class="card-age">Age ${escapeHtml(c.age)}</div>` : '';
+  const speciesTag = c.species_race ? `<span class="card-species">${escapeHtml(c.species_race)}</span>` : '';
+  const roleLine = c.role_archetype || (c.name ? '' : 'Untitled');
+  return `
+    <button class="card-btn" data-id="${c.id}">
+      <article class="card">
+        <div class="card-portrait">
+          ${c.portrait_url ? portrait : `<div class="card-placeholder"><span>${escapeHtml(initials(c.name))}</span></div>`}
+          <span class="card-frame"></span>
+          <span class="card-num">${escapeHtml(num)}</span>
+          ${speciesTag}
+          <div class="card-scrim">
+            <div class="card-name">${escapeHtml(c.name || 'Unnamed')}</div>
+            ${ageLine}
+          </div>
+        </div>
+        <div class="card-accentbar" style="background:${escapeHtml(acc)}"></div>
+        <div class="card-info">
+          <span>${escapeHtml(roleLine)}</span>
+          <span class="card-dot" style="background:${escapeHtml(acc)}"></span>
+        </div>
+      </article>
+    </button>`;
+}
+
+// ---------------------------------------------------------------- detail view
+
+function fieldsBySection() {
+  const bySec = {}; const order = [];
+  STATE.fields.forEach(f => { if (!bySec[f.section]) { bySec[f.section] = []; order.push(f.section); } bySec[f.section].push(f); });
+  return { bySec, order };
+}
+
+function sectionOptionsList() {
+  const { order } = fieldsBySection();
+  const opts = [...order];
+  SECTION_ORDER.forEach(s => { if (!opts.includes(s)) opts.push(s); });
+  return opts;
+}
+
+function renderDetailView() {
+  const d = STATE.selectedDetail;
+  const idx = STATE.characters.findIndex(c => c.id === d.id);
+  const num = '№ ' + String((idx >= 0 ? idx : 0) + 1).padStart(3, '0');
+  const acc = isValidColor(d.values.accent_colour) ? d.values.accent_colour : 'var(--accent)';
+
+  const main = document.getElementById('main-content');
+  main.innerHTML = `
+    <div class="detail-shell">
+      <div class="detail-topbar">
+        <button class="btn-line" id="back-btn">&larr; All characters</button>
+        <span class="num">${escapeHtml(num)}</span>
+        <button class="btn-line delete-btn" id="delete-char-btn">Delete</button>
+      </div>
+      <div class="detail-cols">
+        <div class="detail-left">
+          <div class="detail-portrait" id="detail-portrait" style="--acc:${escapeHtml(acc)}"></div>
+          <div id="thumb-strip"></div>
+          <p class="thumb-hint">Click a thumbnail to set the primary portrait.</p>
+        </div>
+        <div class="detail-right">
+          <input id="name-input" placeholder="Character name" value="${escapeHtml(d.name)}" style="border-bottom-color:${escapeHtml(acc)}">
+          <div id="tag-row"></div>
+          <div id="field-sections"></div>
+          <div class="field-section">
+            <h3>Relationships</h3>
+            <div id="relationships-list"></div>
+            <button class="add-rel-btn" id="add-rel-btn">+ Add relationship</button>
+          </div>
+          <div class="detail-actions">
+            <button class="btn-line" id="add-field-btn">+ Add a custom field</button>
+            <button class="btn-line" id="manage-fields-btn">Manage fields</button>
+          </div>
+          <p class="detail-hint">New fields become standard on every character. Changes save automatically.</p>
+        </div>
+      </div>
+    </div>`;
+
+  document.getElementById('back-btn').addEventListener('click', goGrid);
+  document.getElementById('delete-char-btn').addEventListener('click', handleDeleteCharacter);
+  document.getElementById('add-field-btn').addEventListener('click', () => openAddFieldModal());
+  document.getElementById('manage-fields-btn').addEventListener('click', () => openManageFieldsModal());
+  document.getElementById('add-rel-btn').addEventListener('click', handleAddRelationship);
+
+  const nameInput = document.getElementById('name-input');
+  nameInput.addEventListener('change', async () => {
+    d.name = nameInput.value;
+    try { await api('PUT', `/characters/${d.id}`, { name: d.name }); } catch (e) { alert('Could not save name: ' + e.message); }
+  });
+
+  redrawPortraitBlock();
+  redrawTagRow();
+  redrawFieldSections();
+  redrawRelationships();
+}
+
+// ---- portrait / images ----
+
+function redrawPortraitBlock() {
+  const d = STATE.selectedDetail;
+  const primary = d.images.find(im => im.is_primary) || d.images[0] || null;
+  const acc = isValidColor(d.values.accent_colour) ? d.values.accent_colour : 'var(--accent)';
+
+  const portraitEl = document.getElementById('detail-portrait');
+  portraitEl.innerHTML = primary
+    ? `<img src="${escapeHtml(primary.url)}" alt="">`
+    : `<div class="card-placeholder"><span>${escapeHtml(initials(d.name))}</span></div>`;
+  portraitEl.insertAdjacentHTML('beforeend', `<div class="detail-accentbar" style="background:${escapeHtml(acc)}"></div>`);
+
+  const strip = document.getElementById('thumb-strip');
+  strip.innerHTML = d.images.map(im => `
+    <div class="thumb" style="border-color:${im.is_primary ? escapeHtml(acc) : 'transparent'}" data-id="${im.id}">
+      <img src="${escapeHtml(im.thumb_url)}" alt="">
+      <button class="remove-x" data-remove="${im.id}">&times;</button>
+    </div>`).join('') + `
+    <label class="thumb-add">+
+      <input type="file" accept="image/jpeg,image/png,image/webp" multiple style="display:none" id="image-upload-input">
+    </label>`;
+
+  strip.querySelectorAll('.thumb').forEach(el => {
+    el.addEventListener('click', e => {
+      if (e.target.closest('.remove-x')) return;
+      setPrimaryImage(Number(el.dataset.id));
+    });
+  });
+  strip.querySelectorAll('.remove-x').forEach(btn => {
+    btn.addEventListener('click', e => { e.stopPropagation(); removeImage(Number(btn.dataset.remove)); });
+  });
+  document.getElementById('image-upload-input').addEventListener('change', e => {
+    if (e.target.files.length) uploadImages(e.target.files);
+  });
+}
+
+async function uploadImages(fileList) {
+  for (const f of fileList) {
+    if (!/^image\/(jpeg|png|webp)$/.test(f.type)) { alert(`"${f.name}" isn't a JPEG, PNG, or WebP image`); return; }
+    if (f.size > 8 * 1024 * 1024) { alert(`"${f.name}" is larger than 8MB`); return; }
+  }
+  const fd = new FormData();
+  for (const f of fileList) fd.append('files', f);
+  try {
+    STATE.selectedDetail = await api('POST', `/characters/${STATE.selectedDetail.id}/images`, fd);
+    redrawPortraitBlock();
+  } catch (e) {
+    alert('Upload failed: ' + e.message);
+  }
+}
+
+async function setPrimaryImage(imageId) {
+  try {
+    STATE.selectedDetail = await api('PUT', `/characters/${STATE.selectedDetail.id}/images/${imageId}/primary`);
+    redrawPortraitBlock();
+  } catch (e) {
+    alert('Could not set primary image: ' + e.message);
+  }
+}
+
+async function removeImage(imageId) {
+  try {
+    STATE.selectedDetail = await api('DELETE', `/characters/${STATE.selectedDetail.id}/images/${imageId}`);
+    redrawPortraitBlock();
+  } catch (e) {
+    alert('Could not remove image: ' + e.message);
+  }
+}
+
+// ---- tags ----
+
+function redrawTagRow() {
+  const d = STATE.selectedDetail;
+  const el = document.getElementById('tag-row');
+  el.innerHTML = (d.tags || []).map(t =>
+    `<span class="chip">${escapeHtml(t)}<button data-tag="${escapeHtml(t)}">&times;</button></span>`
+  ).join('') + `<input id="tag-input" placeholder="+ tag">`;
+
+  el.querySelectorAll('.chip button').forEach(btn => {
+    btn.addEventListener('click', () => removeTag(btn.dataset.tag));
+  });
+  document.getElementById('tag-input').addEventListener('keydown', e => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const v = e.target.value.trim();
+      if (v) addTag(v);
+      e.target.value = '';
+    }
+  });
+}
+
+async function addTag(tag) {
+  const d = STATE.selectedDetail;
+  if ((d.tags || []).includes(tag)) return;
+  const newTags = [...(d.tags || []), tag];
+  try {
+    STATE.selectedDetail = await api('PUT', `/characters/${d.id}`, { tags: newTags });
+    redrawTagRow();
+  } catch (e) {
+    alert('Could not add tag: ' + e.message);
+  }
+}
+
+async function removeTag(tag) {
+  const d = STATE.selectedDetail;
+  const newTags = (d.tags || []).filter(t => t !== tag);
+  try {
+    STATE.selectedDetail = await api('PUT', `/characters/${d.id}`, { tags: newTags });
+    redrawTagRow();
+  } catch (e) {
+    alert('Could not remove tag: ' + e.message);
+  }
+}
+
+// ---- field sections ----
+
+function redrawFieldSections() {
+  const d = STATE.selectedDetail;
+  const { bySec, order } = fieldsBySection();
+  const el = document.getElementById('field-sections');
+
+  el.innerHTML = order.map(secName => `
+    <div class="field-section">
+      <h3>${escapeHtml(secName)}</h3>
+      <div class="fields-grid">${bySec[secName].map(f => fieldControlHTML(f, d.values[f.key])).join('')}</div>
+    </div>`).join('');
+
+  order.forEach(secName => {
+    bySec[secName].forEach(f => {
+      const input = document.getElementById(`field-${f.id}`);
+      if (!input) return;
+      if (f.type === 'color') {
+        const hexEl = document.getElementById(`field-${f.id}-hex`);
+        const clearBtn = document.getElementById(`field-${f.id}-clear`);
+        input.addEventListener('input', () => { hexEl.textContent = input.value; });
+        input.addEventListener('change', () => saveFieldValue(f.key, input.value));
+        clearBtn.addEventListener('click', () => { input.value = '#000000'; hexEl.textContent = '—'; saveFieldValue(f.key, ''); });
+      } else {
+        input.addEventListener('change', () => saveFieldValue(f.key, input.value));
+      }
+    });
+  });
+}
+
+async function saveFieldValue(key, value) {
+  const d = STATE.selectedDetail;
+  d.values[key] = value;
+  try {
+    await api('PUT', `/characters/${d.id}`, { values: { [key]: value } });
+    if (key === 'accent_colour') {
+      // threaded through the name underline and portrait accent strip — cheap
+      // to patch directly rather than re-rendering the whole detail view
+      const acc = isValidColor(value) ? value : 'var(--accent)';
+      const nameInput = document.getElementById('name-input');
+      if (nameInput) nameInput.style.borderBottomColor = acc;
+      redrawPortraitBlock();
+    }
+  } catch (e) {
+    alert('Could not save: ' + e.message);
+  }
+}
+
+function fieldControlHTML(f, rawValue) {
+  const value = rawValue === undefined || rawValue === null ? '' : rawValue;
+  const id = `field-${f.id}`;
+  const wrapClass = (f.type === 'textarea' || f.type === 'select') ? 'span-all' : '';
+  let control = '';
+  if (f.type === 'textarea') {
+    control = `<textarea class="field-textarea" id="${id}" rows="4" placeholder="Write freely…">${escapeHtml(value)}</textarea>`;
+  } else if (f.type === 'number') {
+    control = `<input type="number" class="field-input" id="${id}" value="${escapeHtml(value)}" placeholder="—">`;
+  } else if (f.type === 'date') {
+    control = `<input type="date" class="field-input" id="${id}" value="${escapeHtml(value)}">`;
+  } else if (f.type === 'select') {
+    const opts = (f.options || []).map(o => `<option value="${escapeHtml(o)}" ${o === value ? 'selected' : ''}>${escapeHtml(o)}</option>`).join('');
+    control = `<select class="field-select" id="${id}"><option value="">—</option>${opts}</select>`;
+  } else if (f.type === 'color') {
+    const hex = isValidColor(value) ? value : '#000000';
+    control = `<div class="color-row">
+      <input type="color" id="${id}" value="${escapeHtml(hex)}">
+      <span class="hexval" id="${id}-hex">${value ? escapeHtml(value) : '—'}</span>
+      <button type="button" class="clear-link" id="${id}-clear">clear</button>
+    </div>`;
+  } else {
+    control = `<input type="text" class="field-input" id="${id}" value="${escapeHtml(value)}" placeholder="—">`;
+  }
+  return `<div class="${wrapClass}"><label class="field-label">${escapeHtml(f.label)}</label>${control}</div>`;
+}
+
+// ---- relationships ----
+
+function redrawRelationships() {
+  const d = STATE.selectedDetail;
+  const el = document.getElementById('relationships-list');
+  const otherChars = STATE.characters.filter(c => c.id !== d.id);
+  el.innerHTML = (d.relationships || []).map(r => `
+    <div class="rel-row" data-id="${r.id}">
+      <select data-role="target">
+        <option value="">— choose character —</option>
+        ${otherChars.map(c => `<option value="${c.id}" ${c.id === r.related_id ? 'selected' : ''}>${escapeHtml(c.name || 'Unnamed')}</option>`).join('')}
+      </select>
+      <input data-role="label" value="${escapeHtml(r.label || '')}" placeholder="how are they connected?">
+      <button class="rel-remove" data-role="remove">&times;</button>
+    </div>`).join('');
+
+  el.querySelectorAll('.rel-row').forEach(row => {
+    const relId = Number(row.dataset.id);
+    row.querySelector('[data-role=target]').addEventListener('change', e => updateRelationship(relId, { related_id: e.target.value ? Number(e.target.value) : null }));
+    row.querySelector('[data-role=label]').addEventListener('change', e => updateRelationship(relId, { label: e.target.value }));
+    row.querySelector('[data-role=remove]').addEventListener('click', () => removeRelationship(relId));
+  });
+}
+
+async function handleAddRelationship() {
+  const d = STATE.selectedDetail;
+  try {
+    const rel = await api('POST', `/characters/${d.id}/relationships`, { related_id: null, label: '' });
+    d.relationships.push(rel);
+    redrawRelationships();
+  } catch (e) {
+    alert('Could not add relationship: ' + e.message);
+  }
+}
+
+async function updateRelationship(relId, patch) {
+  const d = STATE.selectedDetail;
+  try {
+    const rel = await api('PUT', `/characters/${d.id}/relationships/${relId}`, patch);
+    const idx = d.relationships.findIndex(r => r.id === relId);
+    if (idx >= 0) d.relationships[idx] = rel;
+  } catch (e) {
+    alert('Could not save relationship: ' + e.message);
+  }
+}
+
+async function removeRelationship(relId) {
+  const d = STATE.selectedDetail;
+  try {
+    await api('DELETE', `/characters/${d.id}/relationships/${relId}`);
+    d.relationships = d.relationships.filter(r => r.id !== relId);
+    redrawRelationships();
+  } catch (e) {
+    alert('Could not remove relationship: ' + e.message);
+  }
+}
+
+// ---- delete character ----
+
+async function handleDeleteCharacter() {
+  if (!confirm('Delete this character permanently?')) return;
+  try {
+    await api('DELETE', `/characters/${STATE.selectedDetail.id}`);
+    await goGrid();
+  } catch (e) {
+    alert('Delete failed: ' + e.message);
+  }
+}
+
+// ---------------------------------------------------------------- modal: add field
+
+function openAddFieldModal() {
+  const draft = { label: '', type: 'text', section: sectionOptionsList()[0] || 'Custom', options: '' };
+  const root = document.getElementById('modal-root');
+  root.innerHTML = `
+    <div class="modal-scrim" id="af-scrim">
+      <div class="modal-box" style="width:min(440px,100%)" id="af-box">
+        <h2>New field</h2>
+        <p class="lede">Added to every character, existing and future.</p>
+        <label class="modal-label">Field name</label>
+        <input class="modal-input" id="af-label" placeholder="e.g. Alignment, Voice, Theme song">
+        <label class="modal-label">Type</label>
+        <div class="type-btn-row" id="af-types">
+          ${Object.keys(TYPE_LABELS).map(t => `<button type="button" class="type-btn ${t === draft.type ? 'active' : ''}" data-type="${t}">${TYPE_LABELS[t]}</button>`).join('')}
+        </div>
+        <div id="af-options-wrap" style="display:none">
+          <label class="modal-label">Options (one per line)</label>
+          <textarea class="modal-textarea" id="af-options" rows="3" placeholder="Lawful&#10;Neutral&#10;Chaotic"></textarea>
+        </div>
+        <label class="modal-label">Group under</label>
+        <select class="modal-select" id="af-section">
+          ${sectionOptionsList().map(s => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join('')}
+        </select>
+        <div class="modal-actions-end">
+          <button class="btn-line" id="af-cancel">Cancel</button>
+          <button class="btn-solid" id="af-save">Add field</button>
+        </div>
+      </div>
+    </div>`;
+
+  const scrim = document.getElementById('af-scrim');
+  scrim.addEventListener('click', e => { if (e.target === scrim) closeModal(); });
+  document.getElementById('af-box').addEventListener('click', e => e.stopPropagation());
+  document.getElementById('af-cancel').addEventListener('click', closeModal);
+  document.getElementById('af-types').querySelectorAll('.type-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      draft.type = btn.dataset.type;
+      document.getElementById('af-types').querySelectorAll('.type-btn').forEach(b => b.classList.toggle('active', b === btn));
+      document.getElementById('af-options-wrap').style.display = draft.type === 'select' ? 'block' : 'none';
+    });
+  });
+  document.getElementById('af-save').addEventListener('click', async () => {
+    const label = document.getElementById('af-label').value.trim();
+    if (!label) { alert('Give the field a name first'); return; }
+    let options = null;
+    if (draft.type === 'select') {
+      options = document.getElementById('af-options').value.split(/[\n,]/).map(o => o.trim()).filter(Boolean);
+      if (options.length === 0) { alert('Choice fields need at least one option'); return; }
+    }
+    const section = document.getElementById('af-section').value;
+    try {
+      await api('POST', '/fields', { label, type: draft.type, options, section });
+      STATE.fields = await api('GET', '/fields');
+      closeModal();
+      if (STATE.view === 'detail') redrawFieldSections();
+    } catch (e) {
+      alert('Could not add field: ' + e.message);
+    }
+  });
+}
+
+// ---------------------------------------------------------------- modal: manage fields
+
+function openManageFieldsModal() {
+  const root = document.getElementById('modal-root');
+  root.innerHTML = `
+    <div class="modal-scrim" id="mf-scrim">
+      <div class="modal-box" style="width:min(520px,100%);max-height:82vh;overflow:auto" id="mf-box">
+        <h2>Manage fields</h2>
+        <p class="lede">Reorder any field; rename or delete custom ones. Built-in fields are locked.</p>
+        <div id="mf-list" style="display:flex;flex-direction:column;gap:8px"></div>
+        <div class="modal-actions-end" style="margin-top:20px">
+          <button class="btn-solid" id="mf-done">Done</button>
+        </div>
+      </div>
+    </div>`;
+  const scrim = document.getElementById('mf-scrim');
+  scrim.addEventListener('click', e => { if (e.target === scrim) closeManageFieldsModal(); });
+  document.getElementById('mf-box').addEventListener('click', e => e.stopPropagation());
+  document.getElementById('mf-done').addEventListener('click', closeManageFieldsModal);
+  drawManageFieldsList();
+}
+
+function closeManageFieldsModal() {
+  closeModal();
+  if (STATE.view === 'detail') redrawFieldSections();
+}
+
+function drawManageFieldsList() {
+  const sorted = [...STATE.fields].sort((a, b) => a.sort_order - b.sort_order);
+  const list = document.getElementById('mf-list');
+  list.innerHTML = sorted.map((f, i) => `
+    <div class="mf-row" data-id="${f.id}">
+      <div class="mf-order">
+        <button data-role="up" ${i === 0 ? 'disabled' : ''}>&#9650;</button>
+        <button data-role="down" ${i === sorted.length - 1 ? 'disabled' : ''}>&#9660;</button>
+      </div>
+      ${f.is_builtin
+        ? `<span class="mf-label-static">${escapeHtml(f.label)}</span>`
+        : `<input class="mf-label-input" data-role="rename" value="${escapeHtml(f.label)}">`}
+      <span class="mf-type">${escapeHtml(TYPE_LABELS[f.type] || f.type)}</span>
+      ${f.is_builtin
+        ? `<span class="mf-builtin">built-in</span>`
+        : `<button class="mf-delete" data-role="delete">delete</button>`}
+    </div>`).join('');
+
+  list.querySelectorAll('.mf-row').forEach((row, i) => {
+    const fid = Number(row.dataset.id);
+    const upBtn = row.querySelector('[data-role=up]');
+    const downBtn = row.querySelector('[data-role=down]');
+    if (upBtn) upBtn.addEventListener('click', () => moveField(fid, -1));
+    if (downBtn) downBtn.addEventListener('click', () => moveField(fid, 1));
+    const renameInput = row.querySelector('[data-role=rename]');
+    if (renameInput) renameInput.addEventListener('change', () => renameField(fid, renameInput.value));
+    const deleteBtn = row.querySelector('[data-role=delete]');
+    if (deleteBtn) deleteBtn.addEventListener('click', () => handleDeleteField(fid));
+  });
+}
+
+async function moveField(id, direction) {
+  const sorted = [...STATE.fields].sort((a, b) => a.sort_order - b.sort_order);
+  const idx = sorted.findIndex(f => f.id === id);
+  const swapIdx = idx + direction;
+  if (swapIdx < 0 || swapIdx >= sorted.length) return;
+  const a = sorted[idx], b = sorted[swapIdx];
+  try {
+    await api('PUT', `/fields/${a.id}`, { sort_order: b.sort_order });
+    await api('PUT', `/fields/${b.id}`, { sort_order: a.sort_order });
+    STATE.fields = await api('GET', '/fields');
+    drawManageFieldsList();
+  } catch (e) {
+    alert('Could not reorder: ' + e.message);
+  }
+}
+
+async function renameField(id, label) {
+  label = label.trim();
+  if (!label) { alert('Label cannot be empty'); drawManageFieldsList(); return; }
+  try {
+    await api('PUT', `/fields/${id}`, { label });
+    STATE.fields = await api('GET', '/fields');
+  } catch (e) {
+    alert('Rename failed: ' + e.message);
+    drawManageFieldsList();
+  }
+}
+
+async function handleDeleteField(id) {
+  if (!confirm('Remove this field from every character? Existing entries in it are lost.')) return;
+  try {
+    await api('DELETE', `/fields/${id}`);
+    STATE.fields = await api('GET', '/fields');
+    drawManageFieldsList();
+  } catch (e) {
+    alert('Delete failed: ' + e.message);
+  }
+}
+
+// ---------------------------------------------------------------- modal: backup & restore
+
+async function openBackupModal() {
+  await loadStatus();
+  const s = STATE.status;
+  const root = document.getElementById('modal-root');
+  const backed = !!(s && s.last_backup_at);
+  const driveReady = !!(s && s.drive_configured && s.drive_authorized);
+
+  const driveLine = !s ? 'Status unavailable'
+    : !s.drive_configured ? 'Not configured — add GOOGLE_CLIENT_ID/SECRET to .env'
+    : !s.drive_authorized ? 'Configured but not authorized — run drive_backup.py --authorize'
+    : 'Connected';
+
+  root.innerHTML = `
+    <div class="modal-scrim" id="bk-scrim">
+      <div class="modal-box" style="width:min(480px,100%);padding:26px" id="bk-box">
+        <div style="display:flex;align-items:center;gap:9px;margin-bottom:6px">
+          <span class="dot ${backed ? 'backed' : ''}"></span>
+          <h2 style="margin:0">Backup &amp; restore</h2>
+        </div>
+        <p class="lede" style="font-size:13.5px;line-height:1.6">
+          Syncs automatically to your Google Drive <strong style="color:var(--ink)">“Character Profile App”</strong> folder
+          after every change, plus once a day. Google Drive: <strong>${escapeHtml(driveLine)}</strong>.
+          Portraits (Cloudinary): <strong>${s && s.cloudinary_configured ? 'connected' : 'not configured'}</strong>.
+        </p>
+        <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:20px">
+          <button class="btn-solid" id="bk-export" style="flex:1 1 180px;padding:13px;border-radius:9px">&darr; Download snapshot</button>
+          <button class="btn-line" id="bk-backup" style="flex:1 1 180px;padding:13px;border-radius:9px" ${driveReady ? '' : 'disabled'}>Back up now</button>
+        </div>
+        <button class="btn-line" id="bk-restore" style="width:100%;margin-bottom:20px;padding:13px;border-radius:9px" ${driveReady ? '' : 'disabled'}>Restore from Drive</button>
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--muted);border-top:1px solid var(--line);padding-top:14px;display:flex;justify-content:space-between;gap:10px">
+          <span>${backed ? 'Last backup: ' + new Date(s.last_backup_at).toLocaleString() : 'No backup yet'}</span>
+          <button id="bk-close" style="border:none;background:none;cursor:pointer;color:var(--muted);text-decoration:underline">Close</button>
+        </div>
+      </div>
+    </div>`;
+
+  const scrim = document.getElementById('bk-scrim');
+  scrim.addEventListener('click', e => { if (e.target === scrim) closeModal(); });
+  document.getElementById('bk-box').addEventListener('click', e => e.stopPropagation());
+  document.getElementById('bk-close').addEventListener('click', closeModal);
+  document.getElementById('bk-export').addEventListener('click', async () => {
+    try {
+      const data = await api('GET', '/export');
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'dramatis-' + new Date().toISOString().slice(0, 10) + '.json';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(a.href);
+    } catch (e) {
+      alert('Could not download snapshot: ' + e.message);
+    }
+  });
+  document.getElementById('bk-backup').addEventListener('click', async () => {
+    try {
+      await api('POST', '/backup');
+      await loadStatus();
+      closeModal();
+      if (STATE.view === 'grid') renderGridResults();
+    } catch (e) {
+      alert('Backup failed: ' + e.message);
+    }
+  });
+  document.getElementById('bk-restore').addEventListener('click', async () => {
+    if (!confirm('Replace everything currently in the app with the latest Drive backup? This can\'t be undone.')) return;
+    try {
+      await api('POST', '/restore', { confirm: true });
+      closeModal();
+      STATE.fields = await api('GET', '/fields');
+      await goGrid();
+    } catch (e) {
+      alert('Restore failed: ' + e.message);
+    }
+  });
+}
+
+function closeModal() {
+  document.getElementById('modal-root').innerHTML = '';
+}
+</script>
+</body>
+</html>

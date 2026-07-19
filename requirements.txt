@@ -1,0 +1,7 @@
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-multipart>=0.0.9
+cloudinary>=1.40
+google-api-python-client>=2.130
+google-auth-oauthlib>=1.2
+python-dotenv>=1.0
