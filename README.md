@@ -71,33 +71,32 @@ status.
    Drive API**.
 2. Under **APIs & Services → Credentials**, create an **OAuth client ID**
    of type **Desktop app**. Copy the client ID and secret into `.env`.
-3. **Authorize once, on a machine with a browser** — backupbox is
-   headless, so this step can't run there:
+3. **Authorize once, on a machine with a browser** — if your server is
+   headless, this step can't run there:
    ```bash
    python drive_backup.py --authorize
    ```
    This opens a browser, walks through Google's consent screen, and
    writes `token.json`. Copy that file to the server's working directory
-   (`scp token.json christan@backupbox:~/Projects/dramatis/token.json`).
+   (`scp token.json user@your-server:~/Projects/dramatis/token.json`).
    After that, every backup is silent — no browser involved.
 
 Dramatis creates (or finds) a Drive folder named **"Character Profile
 App"** and keeps the last ~10 timestamped JSON backups there.
 
-## Deploying (backupbox)
+## Deploying
 
-**backupbox is memory-bound** — roughly 116MB free, swap already full.
-A second uvicorn app costs ~90MB RSS and won't fit comfortably alongside
-zamak-ledger and whatever else is running. **Boot backupbox to
-`multi-user.target`** (drops the full GNOME desktop, reclaiming ~1GB)
-*before* adding this service — don't try to trim this app instead, there
-isn't much left to trim.
+If your host is memory-constrained, keep an eye on free RAM and swap —
+a second uvicorn app costs ~90MB RSS and may not fit comfortably
+alongside other services. Booting to `multi-user.target` (drops the
+full desktop environment) can reclaim ~1GB if needed, before you try to
+trim the app itself.
 
 ```bash
 # local
 git add <files> && git commit -m "..." && git push
 
-# on backupbox
+# on the server
 cd ~/Projects/dramatis
 git pull
 sudo systemctl restart dramatis        # only strictly needed for .py changes
@@ -106,11 +105,10 @@ curl -s http://localhost:8421/status   # confirm new code is live
 
 `static/index.html` edits are live on next request (served fresh from
 disk); any `.py` change needs a restart. Verify the restart actually
-landed — `systemctl show dramatis -p ActiveEnterTimestamp` — zamak hit
-cases where a requested restart silently didn't happen and stale code
-kept running. Do a final check from a device against the `tailscale
-serve` HTTPS URL, not just `localhost`.
+landed — `systemctl show dramatis -p ActiveEnterTimestamp` — a
+requested restart can silently not happen, leaving stale code running.
+Do a final check from a device against the `tailscale serve` HTTPS URL,
+not just `localhost`.
 
-Set up the systemd unit and `tailscale serve` the same way zamak-ledger's
-`HANDOFF.md` documents (own port, own service name — `dramatis`, not
-`zamak-ledger`).
+Set up the systemd unit and `tailscale serve` for this app's own port
+and service name (`dramatis`).
