@@ -905,7 +905,7 @@ function openManageFieldsModal() {
     <div class="modal-scrim" id="mf-scrim">
       <div class="modal-box" style="width:min(520px,100%);max-height:82vh;overflow:auto" id="mf-box">
         <h2>Manage fields</h2>
-        <p class="lede">Reorder any field; rename or delete custom ones. Built-in fields are locked.</p>
+        <p class="lede">Reorder any field, rename custom ones, delete any field (including built-ins).</p>
         <div id="mf-list" style="display:flex;flex-direction:column;gap:8px"></div>
         <div class="modal-actions-end" style="margin-top:20px">
           <button class="btn-solid" id="mf-done">Done</button>
@@ -937,9 +937,8 @@ function drawManageFieldsList() {
         ? `<span class="mf-label-static">${escapeHtml(f.label)}</span>`
         : `<input class="mf-label-input" data-role="rename" value="${escapeHtml(f.label)}">`}
       <span class="mf-type">${escapeHtml(TYPE_LABELS[f.type] || f.type)}</span>
-      ${f.is_builtin
-        ? `<span class="mf-builtin">built-in</span>`
-        : `<button class="mf-delete" data-role="delete">delete</button>`}
+      ${f.is_builtin ? `<span class="mf-builtin">built-in</span>` : ''}
+      <button class="mf-delete" data-role="delete">delete</button>
     </div>`).join('');
 
   list.querySelectorAll('.mf-row').forEach((row, i) => {

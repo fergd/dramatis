@@ -966,12 +966,10 @@ def delete_field(field_id: int, owner: str = Depends(get_current_owner)):
     conn = get_conn()
     try:
         row = conn.execute(
-            "SELECT is_builtin FROM fields WHERE id = ? AND owner = ?", (field_id, owner)
+            "SELECT id FROM fields WHERE id = ? AND owner = ?", (field_id, owner)
         ).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Field not found")
-        if row["is_builtin"]:
-            raise HTTPException(status_code=400, detail="Built-in fields can't be deleted")
         conn.execute("DELETE FROM character_values WHERE field_id = ?", (field_id,))
         conn.execute("DELETE FROM fields WHERE id = ?", (field_id,))
         conn.commit()
