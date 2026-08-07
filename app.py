@@ -140,24 +140,28 @@ def _seed_builtin_fields(conn: sqlite3.Connection, owner: str):
 def _migrate_fields_to_owner(conn: sqlite3.Connection):
     """One-time rebuild: `fields.key` used to be globally UNIQUE; now it's only
     unique per-owner (both people get identically-keyed built-ins). SQLite
-    can't ALTER a UNIQUE constraint, so this renames the old table, recreates
-    it from the current schema, and copies every row across under
-    LEGACY_OWNER — preserving `id` so character_values.field_id stays valid.
-    Guarded by the presence of the `owner` column, so it only runs once.
+    can't ALTER a UNIQUE constraint, so this builds the new table under a
+    temp name, copies every row across under LEGACY_OWNER — preserving `id`
+    so character_values.field_id stays valid — drops the old `fields` table,
+    then renames the temp table into place. Guarded by the presence of the
+    `owner` column, so it only runs once.
 
-    Foreign keys are switched off for the duration: SQLite's RENAME TO
-    silently rewrites character_values' FK to point at "fields_legacy", and
-    dropping that table with ON DELETE CASCADE active wipes every character's
-    field values (confirmed the hard way against a test DB before adding
-    this) — PRAGMA foreign_keys can only be toggled outside a transaction,
-    which is exactly the state get_conn() is in before the first write."""
+    Deliberately does NOT rename the old `fields` table directly (e.g. to
+    `fields_legacy`): SQLite's RENAME TO silently rewrites *other* tables'
+    FK definitions to follow a renamed table — confirmed on this deploy's
+    SQLite (3.40.1) that this happens even with `PRAGMA foreign_keys=OFF`,
+    permanently pointing character_values.field_id at a name that's about to
+    be dropped. Renaming the *new* table into place instead is safe, since
+    nothing references "fields_new" yet for SQLite to rewrite. Foreign keys
+    are still switched off for the DROP TABLE fields step, since dropping a
+    table while something still legitimately references it by name would
+    otherwise cascade-delete every character's field values."""
     existing = {row[1] for row in conn.execute("PRAGMA table_info(fields)").fetchall()}
     if not existing or "owner" in existing:
         return  # table doesn't exist yet, or already migrated
     conn.execute("PRAGMA foreign_keys = OFF")
-    conn.execute("ALTER TABLE fields RENAME TO fields_legacy")
     conn.execute(
-        "CREATE TABLE fields ("
+        "CREATE TABLE fields_new ("
         "id INTEGER PRIMARY KEY AUTOINCREMENT,"
         "owner TEXT NOT NULL,"
         "key TEXT NOT NULL,"
@@ -171,11 +175,12 @@ def _migrate_fields_to_owner(conn: sqlite3.Connection):
         "UNIQUE(owner, key))"
     )
     conn.execute(
-        "INSERT INTO fields (id, owner, key, label, type, options, section, is_builtin, sort_order, created_at) "
-        "SELECT id, ?, key, label, type, options, section, is_builtin, sort_order, created_at FROM fields_legacy",
+        "INSERT INTO fields_new (id, owner, key, label, type, options, section, is_builtin, sort_order, created_at) "
+        "SELECT id, ?, key, label, type, options, section, is_builtin, sort_order, created_at FROM fields",
         (LEGACY_OWNER,),
     )
-    conn.execute("DROP TABLE fields_legacy")
+    conn.execute("DROP TABLE fields")
+    conn.execute("ALTER TABLE fields_new RENAME TO fields")
     conn.commit()
     conn.execute("PRAGMA foreign_keys = ON")
     logger.info(f"Migrated fields table to per-owner schema; backfilled to owner={LEGACY_OWNER!r}")
