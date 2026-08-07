@@ -31,7 +31,7 @@ from dotenv import load_dotenv
 load_dotenv()  # must run before cloudinary_images imports the cloudinary SDK,
                 # which auto-configures from CLOUDINARY_URL at import time
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -45,6 +45,13 @@ logger = logging.getLogger("dramatis")
 
 DB_PATH = os.environ.get("PROFILES_DB_PATH", "profiles.db")
 
+# Who's allowed to log in, and who pre-existing (pre-auth) data belongs to.
+# Not a security boundary — Tailscale is (see README) — this just separates
+# each person's characters/fields from the other's.
+ALLOWED_OWNERS = [u.strip() for u in os.environ.get("DRAMATIS_USERS", "").split(",") if u.strip()]
+LEGACY_OWNER = os.environ.get("DRAMATIS_LEGACY_OWNER", ALLOWED_OWNERS[0] if ALLOWED_OWNERS else "")
+OWNER_COOKIE = "dramatis_owner"
+
 app = FastAPI(title="Dramatis")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -55,17 +62,8 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 # deployments (gitignored, never recreated), every schema change that adds
 # a column needs an entry here, or existing installs crash with "no such
 # column" the moment a feature touching the new column runs.
-FIELDS_COLUMNS = {
-    "key": "TEXT",
-    "label": "TEXT",
-    "type": "TEXT DEFAULT 'text'",
-    "options": "TEXT",
-    "section": "TEXT DEFAULT 'Custom'",
-    "is_builtin": "INTEGER DEFAULT 0",
-    "sort_order": "INTEGER DEFAULT 0",
-    "created_at": "TEXT DEFAULT CURRENT_TIMESTAMP",
-}
 CHARACTERS_COLUMNS = {
+    "owner": "TEXT NOT NULL DEFAULT ''",
     "name": "TEXT DEFAULT ''",
     "created_at": "TEXT DEFAULT CURRENT_TIMESTAMP",
     "updated_at": "TEXT DEFAULT CURRENT_TIMESTAMP",
@@ -114,7 +112,7 @@ def slugify(label: str) -> str:
 def _migrate_table(conn: sqlite3.Connection, table_name: str, columns: dict):
     existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()}
     if not existing:
-        return  # table doesn't exist yet — executescript above already created it fully
+        return  # table doesn't exist yet — the executescript call in get_conn() will create it fully
     for col, coltype in columns.items():
         if col not in existing:
             try:
@@ -125,29 +123,82 @@ def _migrate_table(conn: sqlite3.Connection, table_name: str, columns: dict):
     conn.commit()
 
 
-def _seed_builtin_fields(conn: sqlite3.Connection):
-    count = conn.execute("SELECT COUNT(*) FROM fields").fetchone()[0]
+def _seed_builtin_fields(conn: sqlite3.Connection, owner: str):
+    count = conn.execute("SELECT COUNT(*) FROM fields WHERE owner = ?", (owner,)).fetchone()[0]
     if count > 0:
         return
     for i, (label, ftype, section, options) in enumerate(BUILTIN_FIELDS):
         conn.execute(
-            "INSERT INTO fields (key, label, type, options, section, is_builtin, sort_order) "
-            "VALUES (?, ?, ?, ?, ?, 1, ?)",
-            (slugify(label), label, ftype, json.dumps(options) if options else None, section, i),
+            "INSERT INTO fields (owner, key, label, type, options, section, is_builtin, sort_order) "
+            "VALUES (?, ?, ?, ?, ?, ?, 1, ?)",
+            (owner, slugify(label), label, ftype, json.dumps(options) if options else None, section, i),
         )
     conn.commit()
-    logger.info(f"Seeded {len(BUILTIN_FIELDS)} built-in fields")
+    logger.info(f"Seeded {len(BUILTIN_FIELDS)} built-in fields for owner={owner!r}")
+
+
+def _migrate_fields_to_owner(conn: sqlite3.Connection):
+    """One-time rebuild: `fields.key` used to be globally UNIQUE; now it's only
+    unique per-owner (both people get identically-keyed built-ins). SQLite
+    can't ALTER a UNIQUE constraint, so this renames the old table, recreates
+    it from the current schema, and copies every row across under
+    LEGACY_OWNER — preserving `id` so character_values.field_id stays valid.
+    Guarded by the presence of the `owner` column, so it only runs once.
+
+    Foreign keys are switched off for the duration: SQLite's RENAME TO
+    silently rewrites character_values' FK to point at "fields_legacy", and
+    dropping that table with ON DELETE CASCADE active wipes every character's
+    field values (confirmed the hard way against a test DB before adding
+    this) — PRAGMA foreign_keys can only be toggled outside a transaction,
+    which is exactly the state get_conn() is in before the first write."""
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(fields)").fetchall()}
+    if not existing or "owner" in existing:
+        return  # table doesn't exist yet, or already migrated
+    conn.execute("PRAGMA foreign_keys = OFF")
+    conn.execute("ALTER TABLE fields RENAME TO fields_legacy")
+    conn.execute(
+        "CREATE TABLE fields ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "owner TEXT NOT NULL,"
+        "key TEXT NOT NULL,"
+        "label TEXT NOT NULL,"
+        "type TEXT NOT NULL DEFAULT 'text',"
+        "options TEXT,"
+        "section TEXT NOT NULL DEFAULT 'Custom',"
+        "is_builtin INTEGER NOT NULL DEFAULT 0,"
+        "sort_order INTEGER NOT NULL DEFAULT 0,"
+        "created_at TEXT DEFAULT CURRENT_TIMESTAMP,"
+        "UNIQUE(owner, key))"
+    )
+    conn.execute(
+        "INSERT INTO fields (id, owner, key, label, type, options, section, is_builtin, sort_order, created_at) "
+        "SELECT id, ?, key, label, type, options, section, is_builtin, sort_order, created_at FROM fields_legacy",
+        (LEGACY_OWNER,),
+    )
+    conn.execute("DROP TABLE fields_legacy")
+    conn.commit()
+    conn.execute("PRAGMA foreign_keys = ON")
+    logger.info(f"Migrated fields table to per-owner schema; backfilled to owner={LEGACY_OWNER!r}")
+
+
+def _backfill_character_owner(conn: sqlite3.Connection):
+    conn.execute("UPDATE characters SET owner = ? WHERE owner = ''", (LEGACY_OWNER,))
+    conn.commit()
 
 
 def get_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
-    conn.executescript(Path("schema.sql").read_text())
-    _migrate_table(conn, "fields", FIELDS_COLUMNS)
+    # These two must run BEFORE executescript below: schema.sql's indexes
+    # reference the `owner` column, which a pre-auth database's `fields`/
+    # `characters` tables won't have yet — CREATE INDEX would crash against
+    # a table still missing that column.
+    _migrate_fields_to_owner(conn)
     _migrate_table(conn, "characters", CHARACTERS_COLUMNS)
+    conn.executescript(Path("schema.sql").read_text())
+    _backfill_character_owner(conn)
     _migrate_table(conn, "character_images", CHARACTER_IMAGES_COLUMNS)
-    _seed_builtin_fields(conn)
     return conn
 
 
@@ -155,9 +206,22 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def get_current_owner(request: Request) -> str:
+    """Not a security check — Tailscale is the access boundary (see README).
+    This just resolves which person's data a request should see."""
+    owner = request.cookies.get(OWNER_COOKIE)
+    if not owner or owner not in ALLOWED_OWNERS:
+        raise HTTPException(status_code=401, detail="Not logged in")
+    return owner
+
+
 # ---------------------------------------------------------------------------
 # Pydantic request bodies
 # ---------------------------------------------------------------------------
+
+class LoginIn(BaseModel):
+    username: str
+
 
 class CharacterIn(BaseModel):
     name: Optional[str] = ""
@@ -205,6 +269,7 @@ class RestoreIn(BaseModel):
 def _field_row_to_dict(row: sqlite3.Row) -> dict:
     return {
         "id": row["id"],
+        "owner": row["owner"],
         "key": row["key"],
         "label": row["label"],
         "type": row["type"],
@@ -215,8 +280,10 @@ def _field_row_to_dict(row: sqlite3.Row) -> dict:
     }
 
 
-def _all_fields(conn: sqlite3.Connection) -> list:
-    rows = conn.execute("SELECT * FROM fields ORDER BY sort_order, id").fetchall()
+def _all_fields(conn: sqlite3.Connection, owner: str) -> list:
+    rows = conn.execute(
+        "SELECT * FROM fields WHERE owner = ? ORDER BY sort_order, id", (owner,)
+    ).fetchall()
     return [_field_row_to_dict(r) for r in rows]
 
 
@@ -281,6 +348,7 @@ def _character_detail(conn: sqlite3.Connection, character_id: int) -> Optional[d
         return None
     return {
         "id": row["id"],
+        "owner": row["owner"],
         "name": row["name"],
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
@@ -304,9 +372,21 @@ def _character_card(conn: sqlite3.Connection, row: sqlite3.Row, values_by_char: 
     }
 
 
-def build_export(conn: sqlite3.Connection) -> dict:
-    fields = _all_fields(conn)
-    char_rows = conn.execute("SELECT * FROM characters ORDER BY id").fetchall()
+def build_export(conn: sqlite3.Connection, owner: Optional[str] = None) -> dict:
+    """owner=None dumps every owner's data (used for the whole-household Drive
+    backup); a given owner scopes both fields and characters to just them
+    (used by the user-facing "download snapshot" export)."""
+    if owner is not None:
+        fields = _all_fields(conn, owner)
+        char_rows = conn.execute(
+            "SELECT * FROM characters WHERE owner = ? ORDER BY id", (owner,)
+        ).fetchall()
+    else:
+        fields = [
+            _field_row_to_dict(r)
+            for r in conn.execute("SELECT * FROM fields ORDER BY owner, sort_order, id").fetchall()
+        ]
+        char_rows = conn.execute("SELECT * FROM characters ORDER BY id").fetchall()
     characters = [_character_detail(conn, r["id"]) for r in char_rows]
     return {
         "exported_at": _now(),
@@ -390,23 +470,70 @@ def index():
 
 
 # ---------------------------------------------------------------------------
+# Auth — a "who's logging in?" picker, not a password. Tailscale is the real
+# access boundary (see README); this only separates each person's data.
+# ---------------------------------------------------------------------------
+
+@app.get("/users")
+def list_users():
+    return [{"username": u} for u in ALLOWED_OWNERS]
+
+
+@app.get("/me")
+def me(owner: str = Depends(get_current_owner)):
+    return {"username": owner}
+
+
+@app.post("/login")
+def login(body: LoginIn, response: Response):
+    if body.username not in ALLOWED_OWNERS:
+        raise HTTPException(status_code=400, detail="Unknown user")
+    conn = get_conn()
+    try:
+        _seed_builtin_fields(conn, body.username)
+    finally:
+        conn.close()
+    response.set_cookie(
+        OWNER_COOKIE, body.username, max_age=365 * 24 * 3600, httponly=True, samesite="lax"
+    )
+    return {"username": body.username}
+
+
+@app.post("/logout")
+def logout(response: Response):
+    response.delete_cookie(OWNER_COOKIE)
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
 # Characters
 # ---------------------------------------------------------------------------
 
 @app.get("/characters")
-def list_characters():
+def list_characters(owner: str = Depends(get_current_owner)):
     conn = get_conn()
     try:
-        rows = conn.execute("SELECT * FROM characters ORDER BY id DESC").fetchall()
+        rows = conn.execute(
+            "SELECT * FROM characters WHERE owner = ? ORDER BY id DESC", (owner,)
+        ).fetchall()
         all_values = conn.execute(
             "SELECT cv.character_id AS character_id, f.key AS key, cv.value AS value "
-            "FROM character_values cv JOIN fields f ON f.id = cv.field_id"
+            "FROM character_values cv "
+            "JOIN fields f ON f.id = cv.field_id "
+            "JOIN characters c ON c.id = cv.character_id "
+            "WHERE c.owner = ?",
+            (owner,),
         ).fetchall()
         values_by_char: dict = {}
         for v in all_values:
             values_by_char.setdefault(v["character_id"], {})[v["key"]] = v["value"]
 
-        all_tags = conn.execute("SELECT character_id, tag FROM character_tags ORDER BY id").fetchall()
+        all_tags = conn.execute(
+            "SELECT ct.character_id AS character_id, ct.tag AS tag "
+            "FROM character_tags ct JOIN characters c ON c.id = ct.character_id "
+            "WHERE c.owner = ? ORDER BY ct.id",
+            (owner,),
+        ).fetchall()
         tags_by_char: dict = {}
         for t in all_tags:
             tags_by_char.setdefault(t["character_id"], []).append(t["tag"])
@@ -417,21 +544,24 @@ def list_characters():
 
 
 @app.get("/characters/{character_id}")
-def get_character(character_id: int):
+def get_character(character_id: int, owner: str = Depends(get_current_owner)):
     conn = get_conn()
     try:
-        detail = _character_detail(conn, character_id)
-        if not detail:
+        row = conn.execute(
+            "SELECT id FROM characters WHERE id = ? AND owner = ?", (character_id, owner)
+        ).fetchone()
+        if not row:
             raise HTTPException(status_code=404, detail="Character not found")
+        detail = _character_detail(conn, character_id)
         return detail
     finally:
         conn.close()
 
 
-def _upsert_values(conn: sqlite3.Connection, character_id: int, values: dict):
+def _upsert_values(conn: sqlite3.Connection, character_id: int, owner: str, values: dict):
     if not values:
         return
-    field_rows = conn.execute("SELECT id, key FROM fields").fetchall()
+    field_rows = conn.execute("SELECT id, key FROM fields WHERE owner = ?", (owner,)).fetchall()
     field_id_by_key = {r["key"]: r["id"] for r in field_rows}
     for key, value in values.items():
         field_id = field_id_by_key.get(key)
@@ -460,17 +590,17 @@ def _replace_tags(conn: sqlite3.Connection, character_id: int, tags: list):
 
 
 @app.post("/characters", status_code=201)
-def create_character(body: CharacterIn):
+def create_character(body: CharacterIn, owner: str = Depends(get_current_owner)):
     conn = get_conn()
     try:
         now = _now()
         cur = conn.execute(
-            "INSERT INTO characters (name, created_at, updated_at) VALUES (?, ?, ?)",
-            ((body.name or "").strip(), now, now),
+            "INSERT INTO characters (owner, name, created_at, updated_at) VALUES (?, ?, ?, ?)",
+            (owner, (body.name or "").strip(), now, now),
         )
         character_id = cur.lastrowid
         conn.commit()
-        _upsert_values(conn, character_id, body.values or {})
+        _upsert_values(conn, character_id, owner, body.values or {})
         detail = _character_detail(conn, character_id)
     finally:
         conn.close()
@@ -479,10 +609,12 @@ def create_character(body: CharacterIn):
 
 
 @app.put("/characters/{character_id}")
-def update_character(character_id: int, body: CharacterUpdate):
+def update_character(character_id: int, body: CharacterUpdate, owner: str = Depends(get_current_owner)):
     conn = get_conn()
     try:
-        row = conn.execute("SELECT id FROM characters WHERE id = ?", (character_id,)).fetchone()
+        row = conn.execute(
+            "SELECT id FROM characters WHERE id = ? AND owner = ?", (character_id, owner)
+        ).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Character not found")
         if body.name is not None:
@@ -493,7 +625,7 @@ def update_character(character_id: int, body: CharacterUpdate):
         else:
             conn.execute("UPDATE characters SET updated_at = ? WHERE id = ?", (_now(), character_id))
         conn.commit()
-        _upsert_values(conn, character_id, body.values or {})
+        _upsert_values(conn, character_id, owner, body.values or {})
         if body.tags is not None:
             _replace_tags(conn, character_id, body.tags)
         detail = _character_detail(conn, character_id)
@@ -504,10 +636,12 @@ def update_character(character_id: int, body: CharacterUpdate):
 
 
 @app.delete("/characters/{character_id}", status_code=204)
-def delete_character(character_id: int):
+def delete_character(character_id: int, owner: str = Depends(get_current_owner)):
     conn = get_conn()
     try:
-        row = conn.execute("SELECT id FROM characters WHERE id = ?", (character_id,)).fetchone()
+        row = conn.execute(
+            "SELECT id FROM characters WHERE id = ? AND owner = ?", (character_id, owner)
+        ).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Character not found")
         images = conn.execute(
@@ -530,10 +664,14 @@ def delete_character(character_id: int):
 # ---------------------------------------------------------------------------
 
 @app.post("/characters/{character_id}/images")
-async def upload_images(character_id: int, files: list[UploadFile] = File(...)):
+async def upload_images(
+    character_id: int, files: list[UploadFile] = File(...), owner: str = Depends(get_current_owner)
+):
     conn = get_conn()
     try:
-        char_row = conn.execute("SELECT id FROM characters WHERE id = ?", (character_id,)).fetchone()
+        char_row = conn.execute(
+            "SELECT id FROM characters WHERE id = ? AND owner = ?", (character_id, owner)
+        ).fetchone()
         if not char_row:
             raise HTTPException(status_code=404, detail="Character not found")
 
@@ -574,9 +712,14 @@ async def upload_images(character_id: int, files: list[UploadFile] = File(...)):
 
 
 @app.delete("/characters/{character_id}/images/{image_id}")
-def delete_image(character_id: int, image_id: int):
+def delete_image(character_id: int, image_id: int, owner: str = Depends(get_current_owner)):
     conn = get_conn()
     try:
+        char_row = conn.execute(
+            "SELECT id FROM characters WHERE id = ? AND owner = ?", (character_id, owner)
+        ).fetchone()
+        if not char_row:
+            raise HTTPException(status_code=404, detail="Character not found")
         row = conn.execute(
             "SELECT * FROM character_images WHERE id = ? AND character_id = ?", (image_id, character_id)
         ).fetchone()
@@ -606,9 +749,14 @@ def delete_image(character_id: int, image_id: int):
 
 
 @app.put("/characters/{character_id}/images/{image_id}/primary")
-def set_primary_image(character_id: int, image_id: int):
+def set_primary_image(character_id: int, image_id: int, owner: str = Depends(get_current_owner)):
     conn = get_conn()
     try:
+        char_row = conn.execute(
+            "SELECT id FROM characters WHERE id = ? AND owner = ?", (character_id, owner)
+        ).fetchone()
+        if not char_row:
+            raise HTTPException(status_code=404, detail="Character not found")
         row = conn.execute(
             "SELECT id FROM character_images WHERE id = ? AND character_id = ?", (image_id, character_id)
         ).fetchone()
@@ -629,13 +777,26 @@ def set_primary_image(character_id: int, image_id: int):
 # Relationships (structured character-to-character links)
 # ---------------------------------------------------------------------------
 
+def _check_same_owner_character(conn: sqlite3.Connection, character_id: Optional[int], owner: str):
+    if character_id is None:
+        return
+    row = conn.execute(
+        "SELECT id FROM characters WHERE id = ? AND owner = ?", (character_id, owner)
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=400, detail="related_id must be one of your own characters")
+
+
 @app.post("/characters/{character_id}/relationships", status_code=201)
-def create_relationship(character_id: int, body: RelationshipIn):
+def create_relationship(character_id: int, body: RelationshipIn, owner: str = Depends(get_current_owner)):
     conn = get_conn()
     try:
-        char_row = conn.execute("SELECT id FROM characters WHERE id = ?", (character_id,)).fetchone()
+        char_row = conn.execute(
+            "SELECT id FROM characters WHERE id = ? AND owner = ?", (character_id, owner)
+        ).fetchone()
         if not char_row:
             raise HTTPException(status_code=404, detail="Character not found")
+        _check_same_owner_character(conn, body.related_id, owner)
         max_sort = conn.execute(
             "SELECT COALESCE(MAX(sort_order), -1) FROM relationships WHERE character_id = ?",
             (character_id,),
@@ -657,14 +818,26 @@ def create_relationship(character_id: int, body: RelationshipIn):
 
 
 @app.put("/characters/{character_id}/relationships/{relationship_id}")
-def update_relationship(character_id: int, relationship_id: int, body: RelationshipUpdate):
+def update_relationship(
+    character_id: int,
+    relationship_id: int,
+    body: RelationshipUpdate,
+    owner: str = Depends(get_current_owner),
+):
     conn = get_conn()
     try:
+        char_row = conn.execute(
+            "SELECT id FROM characters WHERE id = ? AND owner = ?", (character_id, owner)
+        ).fetchone()
+        if not char_row:
+            raise HTTPException(status_code=404, detail="Character not found")
         row = conn.execute(
             "SELECT * FROM relationships WHERE id = ? AND character_id = ?", (relationship_id, character_id)
         ).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Relationship not found")
+        if body.related_id is not None:
+            _check_same_owner_character(conn, body.related_id, owner)
         related_id = body.related_id if body.related_id is not None else row["related_id"]
         label = body.label.strip() if body.label is not None else row["label"]
         conn.execute(
@@ -684,9 +857,14 @@ def update_relationship(character_id: int, relationship_id: int, body: Relations
 
 
 @app.delete("/characters/{character_id}/relationships/{relationship_id}", status_code=204)
-def delete_relationship(character_id: int, relationship_id: int):
+def delete_relationship(character_id: int, relationship_id: int, owner: str = Depends(get_current_owner)):
     conn = get_conn()
     try:
+        char_row = conn.execute(
+            "SELECT id FROM characters WHERE id = ? AND owner = ?", (character_id, owner)
+        ).fetchone()
+        if not char_row:
+            raise HTTPException(status_code=404, detail="Character not found")
         row = conn.execute(
             "SELECT id FROM relationships WHERE id = ? AND character_id = ?", (relationship_id, character_id)
         ).fetchone()
@@ -704,16 +882,16 @@ def delete_relationship(character_id: int, relationship_id: int):
 # ---------------------------------------------------------------------------
 
 @app.get("/fields")
-def list_fields():
+def list_fields(owner: str = Depends(get_current_owner)):
     conn = get_conn()
     try:
-        return _all_fields(conn)
+        return _all_fields(conn, owner)
     finally:
         conn.close()
 
 
 @app.post("/fields", status_code=201)
-def create_field(body: FieldIn):
+def create_field(body: FieldIn, owner: str = Depends(get_current_owner)):
     if not body.label or not body.label.strip():
         raise HTTPException(status_code=400, detail="Label is required")
     if body.type not in VALID_FIELD_TYPES:
@@ -725,18 +903,22 @@ def create_field(body: FieldIn):
     try:
         base_key = slugify(body.label)
         key = base_key
-        existing_keys = {r["key"] for r in conn.execute("SELECT key FROM fields").fetchall()}
+        existing_keys = {
+            r["key"] for r in conn.execute("SELECT key FROM fields WHERE owner = ?", (owner,)).fetchall()
+        }
         suffix = 2
         while key in existing_keys:
             key = f"{base_key}_{suffix}"
             suffix += 1
 
-        max_sort = conn.execute("SELECT COALESCE(MAX(sort_order), -1) FROM fields").fetchone()[0]
+        max_sort = conn.execute(
+            "SELECT COALESCE(MAX(sort_order), -1) FROM fields WHERE owner = ?", (owner,)
+        ).fetchone()[0]
         cur = conn.execute(
-            "INSERT INTO fields (key, label, type, options, section, is_builtin, sort_order) "
-            "VALUES (?, ?, ?, ?, ?, 0, ?)",
+            "INSERT INTO fields (owner, key, label, type, options, section, is_builtin, sort_order) "
+            "VALUES (?, ?, ?, ?, ?, ?, 0, ?)",
             (
-                key, body.label.strip(), body.type,
+                owner, key, body.label.strip(), body.type,
                 json.dumps(body.options) if body.options else None,
                 (body.section or "Custom").strip() or "Custom",
                 max_sort + 1,
@@ -753,10 +935,12 @@ def create_field(body: FieldIn):
 
 
 @app.put("/fields/{field_id}")
-def update_field(field_id: int, body: FieldUpdate):
+def update_field(field_id: int, body: FieldUpdate, owner: str = Depends(get_current_owner)):
     conn = get_conn()
     try:
-        row = conn.execute("SELECT * FROM fields WHERE id = ?", (field_id,)).fetchone()
+        row = conn.execute(
+            "SELECT * FROM fields WHERE id = ? AND owner = ?", (field_id, owner)
+        ).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Field not found")
 
@@ -778,10 +962,12 @@ def update_field(field_id: int, body: FieldUpdate):
 
 
 @app.delete("/fields/{field_id}", status_code=204)
-def delete_field(field_id: int):
+def delete_field(field_id: int, owner: str = Depends(get_current_owner)):
     conn = get_conn()
     try:
-        row = conn.execute("SELECT is_builtin FROM fields WHERE id = ?", (field_id,)).fetchone()
+        row = conn.execute(
+            "SELECT is_builtin FROM fields WHERE id = ? AND owner = ?", (field_id, owner)
+        ).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Field not found")
         if row["is_builtin"]:
@@ -799,10 +985,10 @@ def delete_field(field_id: int):
 # ---------------------------------------------------------------------------
 
 @app.get("/export")
-def export_data():
+def export_data(owner: str = Depends(get_current_owner)):
     conn = get_conn()
     try:
-        return build_export(conn)
+        return build_export(conn, owner)
     finally:
         conn.close()
 
@@ -842,29 +1028,33 @@ async def restore_data(body: RestoreIn):
 
         field_id_by_key = {}
         for f in export.get("fields", []):
+            field_owner = f.get("owner") or LEGACY_OWNER
             cur = conn.execute(
-                "INSERT INTO fields (key, label, type, options, section, is_builtin, sort_order) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO fields (owner, key, label, type, options, section, is_builtin, sort_order) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
-                    f["key"], f["label"], f["type"],
+                    field_owner, f["key"], f["label"], f["type"],
                     json.dumps(f["options"]) if f.get("options") else None,
                     f.get("section", "Custom"),
                     1 if f.get("is_builtin") else 0,
                     f.get("sort_order", 0),
                 ),
             )
-            field_id_by_key[f["key"]] = cur.lastrowid
+            # keys are only unique per-owner, so the lookup used by
+            # character_values below needs the same (owner, key) scoping
+            field_id_by_key[(field_owner, f["key"])] = cur.lastrowid
 
         old_to_new_char_id = {}
         for c in export.get("characters", []):
+            char_owner = c.get("owner") or LEGACY_OWNER
             cur = conn.execute(
-                "INSERT INTO characters (name, created_at, updated_at) VALUES (?, ?, ?)",
-                (c["name"], c.get("created_at", _now()), c.get("updated_at", _now())),
+                "INSERT INTO characters (owner, name, created_at, updated_at) VALUES (?, ?, ?, ?)",
+                (char_owner, c["name"], c.get("created_at", _now()), c.get("updated_at", _now())),
             )
             character_id = cur.lastrowid
             old_to_new_char_id[c["id"]] = character_id
             for key, value in (c.get("values") or {}).items():
-                field_id = field_id_by_key.get(key)
+                field_id = field_id_by_key.get((char_owner, key))
                 if field_id is not None and value is not None:
                     conn.execute(
                         "INSERT INTO character_values (character_id, field_id, value) VALUES (?, ?, ?)",
@@ -894,18 +1084,24 @@ async def restore_data(body: RestoreIn):
                 )
 
         conn.commit()
-        _seed_builtin_fields(conn)  # no-op if fields already restored, safety net if export was empty
+        # no-op per owner if fields already restored, safety net if export was empty
+        for u in ALLOWED_OWNERS:
+            _seed_builtin_fields(conn, u)
     finally:
         conn.close()
     return {"restored": True, "exported_at": export.get("exported_at")}
 
 
 @app.get("/status")
-def status():
+def status(owner: str = Depends(get_current_owner)):
     conn = get_conn()
     try:
-        char_count = conn.execute("SELECT COUNT(*) FROM characters").fetchone()[0]
-        field_count = conn.execute("SELECT COUNT(*) FROM fields").fetchone()[0]
+        char_count = conn.execute(
+            "SELECT COUNT(*) FROM characters WHERE owner = ?", (owner,)
+        ).fetchone()[0]
+        field_count = conn.execute(
+            "SELECT COUNT(*) FROM fields WHERE owner = ?", (owner,)
+        ).fetchone()[0]
     finally:
         conn.close()
     return {

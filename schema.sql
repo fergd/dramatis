@@ -1,24 +1,30 @@
 -- ============================================================
 -- FIELDS — master list of profile fields, built-in and custom.
 -- Adding a row here is what makes a new field "standard" across
--- every character (see character_values below) — no ALTER TABLE
--- needed per custom field, that's the whole point of the EAV
--- design. `section` groups fields in the detail view (Identity /
--- Description / Notes / Custom, or any name the owner picks).
+-- every character *belonging to the same owner* (see
+-- character_values below) — no ALTER TABLE needed per custom
+-- field, that's the whole point of the EAV design. `section`
+-- groups fields in the detail view (Identity / Description /
+-- Notes / Custom, or any name the owner picks). `owner` separates
+-- each person's field set — keys are only unique within an owner,
+-- not globally, since both people get identically-keyed built-ins
+-- (e.g. "age") seeded independently.
 -- ============================================================
 CREATE TABLE IF NOT EXISTS fields (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    key         TEXT NOT NULL UNIQUE,      -- slug, e.g. "physical_description"
+    owner       TEXT NOT NULL,             -- who this field belongs to, e.g. "Fergus" / "Esme"
+    key         TEXT NOT NULL,             -- slug, e.g. "physical_description"
     label       TEXT NOT NULL,             -- display name, e.g. "Physical description"
     type        TEXT NOT NULL DEFAULT 'text',  -- text | textarea | number | select | date | color
     options     TEXT,                      -- JSON array of strings, only meaningful for type='select'
     section     TEXT NOT NULL DEFAULT 'Custom',
     is_builtin  INTEGER NOT NULL DEFAULT 0, -- built-ins can't be deleted
     sort_order  INTEGER NOT NULL DEFAULT 0,
-    created_at  TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at  TEXT DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(owner, key)
 );
 
-CREATE INDEX IF NOT EXISTS idx_fields_sort_order ON fields(sort_order);
+CREATE INDEX IF NOT EXISTS idx_fields_owner_sort_order ON fields(owner, sort_order);
 
 -- ============================================================
 -- CHARACTERS — one row per cast member. Everything else about a
@@ -26,14 +32,18 @@ CREATE INDEX IF NOT EXISTS idx_fields_sort_order ON fields(sort_order);
 -- its own table; this one only holds what's true regardless of
 -- the current field set. Name is allowed blank (shown as
 -- "Unnamed"/"Untitled") — a brand-new character exists the moment
--- "+ New" is clicked, before the owner has typed anything.
+-- "+ New" is clicked, before it's been named. `owner` is who the
+-- character belongs to, e.g. "Fergus" / "Esme".
 -- ============================================================
 CREATE TABLE IF NOT EXISTS characters (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner       TEXT NOT NULL DEFAULT '',
     name        TEXT NOT NULL DEFAULT '',
     created_at  TEXT DEFAULT CURRENT_TIMESTAMP,
     updated_at  TEXT DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE INDEX IF NOT EXISTS idx_characters_owner ON characters(owner);
 
 -- ============================================================
 -- CHARACTER_VALUES — EAV table: one row per (character, field).

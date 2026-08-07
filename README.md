@@ -33,7 +33,9 @@ share one deploy loop on the same host.
 - **Images:** Cloudinary (no local image storage, no static image mount)
 - **Backup:** Google Drive (OAuth 2.0, `drive.file` scope — files this
   app creates only)
-- **Auth:** none — single user, Tailscale is the security boundary
+- **Auth:** a "who's logging in?" picker (`DRAMATIS_USERS`), not a
+  password — Tailscale remains the real security boundary. This just keeps
+  each person's characters, fields, and tags separate from everyone else's.
 
 Nothing here is committed to git — no database, no `.env`, no OAuth
 token. See `HANDOFF.md` for full architecture, data model, and current
@@ -48,6 +50,11 @@ status.
    pip install -r requirements.txt
    ```
 2. **Get your own keys** (copy `.env.example` to `.env` and fill in):
+   - `DRAMATIS_USERS` — **required**, a comma-separated list of who's
+     allowed to log in, e.g. `DRAMATIS_USERS=Fergus,Esme`. This isn't a
+     password — it just drives the "who's logging in?" picker and keeps
+     each person's characters/fields/tags separate. Real access control is
+     up to you (Tailscale, etc).
    - `CLOUDINARY_URL` — **required** for portrait uploads. Get it from your
      [Cloudinary](https://cloudinary.com/) dashboard ("API Environment
      variable", looks like `cloudinary://<key>:<secret>@<cloud_name>`).
@@ -61,8 +68,8 @@ status.
    ```bash
    uvicorn app:app --host 0.0.0.0 --port 8421
    ```
-   Open `http://localhost:8421`. Built-in fields seed automatically on
-   first run.
+   Open `http://localhost:8421`, pick your name. Built-in fields seed
+   automatically the first time each person logs in.
 
 ### Google Drive setup (one-time, optional)
 

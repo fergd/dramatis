@@ -48,6 +48,11 @@ header {
 #backup-btn { display: inline-flex; align-items: center; gap: 7px; }
 .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; background: var(--amber); }
 .dot.backed { background: var(--green); }
+#user-btn { font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: var(--muted); }
+
+/* ---------- login gate ---------- */
+.login-btn-row { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margin-top: 8px; }
+.login-user-btn { padding: 13px 28px; font-size: 15px; }
 
 /* ---------- tag filter row ---------- */
 #tagrow { display: flex; gap: 7px; flex-wrap: wrap; padding: 11px 20px; background: var(--panel2); border-bottom: 1px solid var(--line); }
@@ -169,12 +174,13 @@ main { padding: 0 20px 70px; }
 </head>
 <body>
 
-<header>
+<header style="display:none">
   <div class="wordmark" id="wordmark"><span>Dramatis</span><span id="char-count"></span></div>
   <input id="search-input" placeholder="Search name, role, species, tag…">
   <div class="theme-toggle" id="theme-toggle"></div>
   <button class="btn-solid" id="new-btn">+ New</button>
   <button class="btn-line" id="backup-btn" title="Backup status"><span class="dot" id="backup-dot"></span>Backup</button>
+  <button class="btn-line" id="user-btn" title="Switch user"></button>
 </header>
 
 <div id="tagrow"></div>
@@ -221,6 +227,12 @@ async function api(method, path, body) {
     opts.body = JSON.stringify(body);
   }
   const res = await fetch(path, opts);
+  if (res.status === 401 && path !== '/me' && path !== '/login') {
+    // Stale/cleared cookie mid-session — reload into the login gate instead
+    // of surfacing a generic fetch-error alert.
+    window.location.reload();
+    throw new Error('Not logged in');
+  }
   if (!res.ok) {
     let detail = res.statusText;
     try { detail = (await res.json()).detail || detail; } catch (e) {}
@@ -247,7 +259,15 @@ function buildHeaderOnce() {
   search.addEventListener('input', e => { STATE.search = e.target.value; renderGridResults(); });
   document.getElementById('new-btn').addEventListener('click', createNewCharacter);
   document.getElementById('backup-btn').addEventListener('click', openBackupModal);
+  document.getElementById('user-btn').addEventListener('click', async () => {
+    try { await api('POST', '/logout'); } catch (e) {}
+    window.location.reload();
+  });
   renderThemeToggle();
+}
+
+function updateUserBadge() {
+  document.getElementById('user-btn').textContent = STATE.owner + ' · switch';
 }
 
 function renderThemeToggle() {
@@ -277,8 +297,22 @@ function updateBackupDot() {
 // ---------------------------------------------------------------- boot / routing
 
 window.addEventListener('DOMContentLoaded', async () => {
-  buildHeaderOnce();
   applyTheme(STATE.theme);
+  const meRes = await fetch('/me');
+  if (meRes.status === 401) {
+    await showLoginView();
+    return;
+  }
+  if (!meRes.ok) {
+    document.getElementById('main-content').innerHTML = `<div class="empty-state"><div class="title">Can't reach the server</div></div>`;
+    return;
+  }
+  const me = await meRes.json();
+  STATE.owner = me.username;
+
+  document.querySelector('header').style.display = '';
+  buildHeaderOnce();
+  updateUserBadge();
   try {
     STATE.fields = await api('GET', '/fields');
   } catch (e) {
@@ -288,6 +322,35 @@ window.addEventListener('DOMContentLoaded', async () => {
   await loadStatus();
   await goGrid();
 });
+
+async function showLoginView() {
+  let users = [];
+  try {
+    users = await api('GET', '/users');
+  } catch (e) {
+    document.getElementById('main-content').innerHTML = `<div class="empty-state"><div class="title">Can't reach the server</div><p>${escapeHtml(e.message)}</p></div>`;
+    return;
+  }
+  document.getElementById('main-content').innerHTML = `
+    <div class="empty-state">
+      <div class="title">Who's logging in?</div>
+      <p>Pick your name to see your own characters and fields.</p>
+      <div class="login-btn-row">
+        ${users.map(u => `<button class="btn-solid login-user-btn" data-username="${escapeHtml(u.username)}">${escapeHtml(u.username)}</button>`).join('')}
+      </div>
+    </div>`;
+  document.querySelectorAll('.login-user-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      try {
+        await api('POST', '/login', { username: btn.dataset.username });
+      } catch (e) {
+        alert(e.message);
+        return;
+      }
+      window.location.reload();
+    });
+  });
+}
 
 async function loadStatus() {
   try { STATE.status = await api('GET', '/status'); } catch (e) { STATE.status = null; }
