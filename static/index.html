@@ -140,6 +140,9 @@ main { padding: 0 20px 70px; }
 .color-row input[type=color] { width: 46px; height: 34px; padding: 0; border: 1px solid var(--line); border-radius: 8px; background: none; cursor: pointer; }
 .color-row .hexval { font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: var(--muted); }
 .color-row .clear-link { border: none; background: none; cursor: pointer; color: var(--muted); font-size: 12px; text-decoration: underline; padding: 0; }
+.swatch-row { display: flex; gap: 7px; flex-wrap: wrap; margin-bottom: 8px; }
+.swatch-btn { width: 24px; height: 24px; border-radius: 50%; border: 2px solid transparent; padding: 0; cursor: pointer; }
+.swatch-btn.active { border-color: var(--ink); box-shadow: 0 0 0 2px var(--panel); }
 
 .rel-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 9px; align-items: center; }
 .rel-row select { flex: 1 1 150px; padding: 9px 10px; background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; font-size: 13px; }
@@ -201,12 +204,23 @@ main { padding: 0 20px 70px; }
 // (--bg, --bg-alt) where Dramatis has three (--bg, --panel, --panel2), so
 // --panel2 cycles back to Baretext's --bg, giving inputs contrast against
 // the --panel surface they sit inside without inventing a new color.
+// `swatches`: preset options for "colour"-type fields (e.g. accent colour),
+// sourced from each Baretext theme's own heading-color/secondary-accent
+// tokens (src/editor/theme.js's injectHeadingColors + index.html's --scene/
+// --cursor) rather than invented — so the picker offers colors that already
+// belong to and read well against the active theme, alongside the free-form
+// native picker for anyone who wants an exact off-palette color.
 const THEMES = {
-  dark:    { label: 'Ember',     vars: { '--bg':'#242424','--panel':'#191919','--panel2':'#242424','--ink':'#faf2d6','--muted':'#bdae93','--line':'#3a3a3a','--accent':'#f8c537' } },
-  light:   { label: 'Parchment', vars: { '--bg':'#f5f0e8','--panel':'#ede8de','--panel2':'#f5f0e8','--ink':'#2a2218','--muted':'#6b5f4a','--line':'#d0c8b8','--accent':'#b8820a' } },
-  amstrad: { label: 'Amstrad',   vars: { '--bg':'#0d130d','--panel':'#0a0f0a','--panel2':'#0d130d','--ink':'#c8e6b0','--muted':'#79956c','--line':'#1c281a','--accent':'#7dc45a' } },
-  grove:   { label: 'Grove',     vars: { '--bg':'#2f383e','--panel':'#272f34','--panel2':'#2f383e','--ink':'#d3c6aa','--muted':'#9aa79d','--line':'#525c62','--accent':'#a7c080' } },
-  dracula: { label: 'Dracula',   vars: { '--bg':'#282a36','--panel':'#21222c','--panel2':'#282a36','--ink':'#f8f8f2','--muted':'#97a1bf','--line':'#44475a','--accent':'#bd93f9' } },
+  dark:    { label: 'Ember',     vars: { '--bg':'#242424','--panel':'#191919','--panel2':'#242424','--ink':'#faf2d6','--muted':'#bdae93','--line':'#3a3a3a','--accent':'#f8c537' },
+             swatches: ['#f8c537','#e8c97a','#c4a85a','#a08844','#7a6832'] },
+  light:   { label: 'Parchment', vars: { '--bg':'#f5f0e8','--panel':'#ede8de','--panel2':'#f5f0e8','--ink':'#2a2218','--muted':'#6b5f4a','--line':'#d0c8b8','--accent':'#b8820a' },
+             swatches: ['#b8820a','#8b5e0a','#b07820','#7a5515','#5a3e0e'] },
+  amstrad: { label: 'Amstrad',   vars: { '--bg':'#0d130d','--panel':'#0a0f0a','--panel2':'#0d130d','--ink':'#c8e6b0','--muted':'#79956c','--line':'#1c281a','--accent':'#7dc45a' },
+             swatches: ['#7dc45a','#8fd670','#6fb050','#549040','#3d6c30'] },
+  grove:   { label: 'Grove',     vars: { '--bg':'#2f383e','--panel':'#272f34','--panel2':'#2f383e','--ink':'#d3c6aa','--muted':'#9aa79d','--line':'#525c62','--accent':'#a7c080' },
+             swatches: ['#a7c080','#e69875','#dbbc7f','#83c092','#7fbbb3'] },
+  dracula: { label: 'Dracula',   vars: { '--bg':'#282a36','--panel':'#21222c','--panel2':'#282a36','--ink':'#f8f8f2','--muted':'#97a1bf','--line':'#44475a','--accent':'#bd93f9' },
+             swatches: ['#bd93f9','#ff79c6','#8be9fd','#50fa7b'] },
 };
 const TYPE_LABELS = { text: 'Short text', textarea: 'Paragraph', number: 'Number', select: 'Select', date: 'Date', color: 'Colour' };
 const SECTION_ORDER = ['Identity', 'Description', 'Notes', 'Custom'];
@@ -225,6 +239,13 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 function isValidColor(v) { return typeof v === 'string' && /^#[0-9a-fA-F]{3,8}$/.test(v.trim()); }
+function setActiveSwatch(container, color) {
+  if (!container) return;
+  const c = (color || '').toLowerCase();
+  container.querySelectorAll('.swatch-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.color.toLowerCase() === c);
+  });
+}
 function initials(name) {
   const p = (name || '').trim().split(/\s+/).filter(Boolean);
   if (!p.length) return '?';
@@ -267,6 +288,9 @@ function applyTheme(id) {
   STATE.theme = themeId;
   localStorage.setItem('dramatis.theme', themeId);
   renderThemeToggle();
+  // Colour-field swatch options are theme-specific — refresh them in place
+  // if a character's detail view is already open when the theme changes.
+  if (STATE.view === 'detail' && STATE.selectedDetail) redrawFieldSections();
 }
 
 // ---------------------------------------------------------------- header (built once, updated in place)
@@ -729,9 +753,22 @@ function redrawFieldSections() {
       if (f.type === 'color') {
         const hexEl = document.getElementById(`field-${f.id}-hex`);
         const clearBtn = document.getElementById(`field-${f.id}-clear`);
-        input.addEventListener('input', () => { hexEl.textContent = input.value; });
+        const swatchRow = document.getElementById(`field-${f.id}-swatches`);
+        input.addEventListener('input', () => { hexEl.textContent = input.value; setActiveSwatch(swatchRow, input.value); });
         input.addEventListener('change', () => saveFieldValue(f.key, input.value));
-        clearBtn.addEventListener('click', () => { input.value = '#000000'; hexEl.textContent = '—'; saveFieldValue(f.key, ''); });
+        clearBtn.addEventListener('click', () => {
+          input.value = '#000000'; hexEl.textContent = '—'; setActiveSwatch(swatchRow, '');
+          saveFieldValue(f.key, '');
+        });
+        if (swatchRow) {
+          swatchRow.querySelectorAll('.swatch-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+              const color = btn.dataset.color;
+              input.value = color; hexEl.textContent = color; setActiveSwatch(swatchRow, color);
+              saveFieldValue(f.key, color);
+            });
+          });
+        }
       } else {
         input.addEventListener('change', () => saveFieldValue(f.key, input.value));
       }
@@ -773,7 +810,11 @@ function fieldControlHTML(f, rawValue) {
     control = `<select class="field-select" id="${id}"><option value="">—</option>${opts}</select>`;
   } else if (f.type === 'color') {
     const hex = isValidColor(value) ? value : '#000000';
-    control = `<div class="color-row">
+    const swatches = (THEMES[STATE.theme] && THEMES[STATE.theme].swatches) || [];
+    const swatchRow = swatches.length ? `<div class="swatch-row" id="${id}-swatches">${swatches.map(sw =>
+      `<button type="button" class="swatch-btn${sw.toLowerCase() === String(value).toLowerCase() ? ' active' : ''}" style="background:${sw}" data-color="${sw}" title="${sw}"></button>`
+    ).join('')}</div>` : '';
+    control = `${swatchRow}<div class="color-row">
       <input type="color" id="${id}" value="${escapeHtml(hex)}">
       <span class="hexval" id="${id}-hex">${value ? escapeHtml(value) : '—'}</span>
       <button type="button" class="clear-link" id="${id}-clear">clear</button>
