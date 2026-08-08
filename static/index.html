@@ -10,8 +10,14 @@
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Serif:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
 :root {
-  --bg:#141413; --panel:#1c1c1a; --panel2:#232320; --ink:#f0eeea; --muted:#9a968d;
-  --line:#33322e; --chip:#2a2a26; --accent:#b3ad9f; --scrim:rgba(0,0,0,.62);
+  /* Ember (dark) — default, matches Baretext's own default theme */
+  --bg:#242424; --panel:#191919; --panel2:#242424; --ink:#faf2d6; --muted:#bdae93;
+  --line:#3a3a3a; --accent:#f8c537;
+  /* Derived from --accent/--panel so every theme gets a correct chip tone
+     for free, without a per-theme value — same trick Baretext's own
+     --wash-accent/--glass-bg tokens use. */
+  --chip: color-mix(in srgb, var(--accent) 14%, var(--panel));
+  --scrim: rgba(0,0,0,.58);
   --hf:'IBM Plex Serif',Georgia,serif;
   --danger:#c86a5f; --amber:#c99a3a; --green:#7a9a5b;
 }
@@ -190,17 +196,24 @@ main { padding: 0 20px 70px; }
 <div id="modal-root"></div>
 
 <script>
+// Ported from Baretext's theme palette (src/index.html) — --bg/--text/
+// --border/--accent map directly; Baretext only has two surface tones
+// (--bg, --bg-alt) where Dramatis has three (--bg, --panel, --panel2), so
+// --panel2 cycles back to Baretext's --bg, giving inputs contrast against
+// the --panel surface they sit inside without inventing a new color.
 const THEMES = {
-  noir:    { label: 'Noir', vars: { '--bg':'#141413','--panel':'#1c1c1a','--panel2':'#232320','--ink':'#f0eeea','--muted':'#9a968d','--line':'#33322e','--chip':'#2a2a26','--accent':'#b3ad9f','--scrim':'rgba(0,0,0,.62)' } },
-  atlas:   { label: 'Atlas', vars: { '--bg':'#efece4','--panel':'#faf8f2','--panel2':'#f2eee5','--ink':'#211f1a','--muted':'#6f6a5f','--line':'#ddd6c7','--chip':'#e7e2d5','--accent':'#7a7267','--scrim':'rgba(20,18,14,.58)' } },
-  archive: { label: 'Archive', vars: { '--bg':'#eceef0','--panel':'#ffffff','--panel2':'#f3f5f7','--ink':'#1c1f22','--muted':'#697077','--line':'#d8dde1','--chip':'#e6eaed','--accent':'#6b747c','--scrim':'rgba(15,18,20,.55)' } },
+  dark:    { label: 'Ember',     vars: { '--bg':'#242424','--panel':'#191919','--panel2':'#242424','--ink':'#faf2d6','--muted':'#bdae93','--line':'#3a3a3a','--accent':'#f8c537' } },
+  light:   { label: 'Parchment', vars: { '--bg':'#f5f0e8','--panel':'#ede8de','--panel2':'#f5f0e8','--ink':'#2a2218','--muted':'#6b5f4a','--line':'#d0c8b8','--accent':'#b8820a' } },
+  amstrad: { label: 'Amstrad',   vars: { '--bg':'#0d130d','--panel':'#0a0f0a','--panel2':'#0d130d','--ink':'#c8e6b0','--muted':'#79956c','--line':'#1c281a','--accent':'#7dc45a' } },
+  grove:   { label: 'Grove',     vars: { '--bg':'#2f383e','--panel':'#272f34','--panel2':'#2f383e','--ink':'#d3c6aa','--muted':'#9aa79d','--line':'#525c62','--accent':'#a7c080' } },
+  dracula: { label: 'Dracula',   vars: { '--bg':'#282a36','--panel':'#21222c','--panel2':'#282a36','--ink':'#f8f8f2','--muted':'#97a1bf','--line':'#44475a','--accent':'#bd93f9' } },
 };
 const TYPE_LABELS = { text: 'Short text', textarea: 'Paragraph', number: 'Number', select: 'Select', date: 'Date', color: 'Colour' };
 const SECTION_ORDER = ['Identity', 'Description', 'Notes', 'Custom'];
 
 let STATE = {
   fields: [], characters: [], status: null,
-  theme: localStorage.getItem('dramatis.theme') || 'noir',
+  theme: localStorage.getItem('dramatis.theme') || 'dark',
   view: 'grid', selectedId: null, selectedDetail: null,
   search: '', activeTag: null,
 };
@@ -243,11 +256,16 @@ async function api(method, path, body) {
 }
 
 function applyTheme(id) {
-  const t = THEMES[id] || THEMES.noir;
+  // Falls back to 'dark' for anyone with an old theme id (noir/atlas/archive)
+  // still saved in localStorage from before this palette swap — resolve to
+  // the actual key used, not the stale input, so the toggle row and storage
+  // both self-correct instead of staying stuck on an invalid id forever.
+  const themeId = THEMES[id] ? id : 'dark';
+  const t = THEMES[themeId];
   const el = document.documentElement;
   Object.entries(t.vars).forEach(([k, v]) => el.style.setProperty(k, v));
-  STATE.theme = id;
-  localStorage.setItem('dramatis.theme', id);
+  STATE.theme = themeId;
+  localStorage.setItem('dramatis.theme', themeId);
   renderThemeToggle();
 }
 
