@@ -113,6 +113,7 @@ CREATE TABLE IF NOT EXISTS relationships (
     character_id  INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
     related_id    INTEGER REFERENCES characters(id) ON DELETE CASCADE,
     label         TEXT NOT NULL DEFAULT '',
+    type          TEXT NOT NULL DEFAULT '',  -- category for map coloring, e.g. "Family"/"Rival" — free text, but UI offers a preset list
     sort_order    INTEGER NOT NULL DEFAULT 0
 );
 

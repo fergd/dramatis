@@ -158,6 +158,7 @@ main { padding: 0 20px 70px; }
 .rel-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 9px; align-items: center; }
 .rel-row select { flex: 1 1 150px; padding: 9px 10px; background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; font-size: 13px; }
 .rel-row input { flex: 2 1 180px; padding: 9px 12px; background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; font-size: 13px; }
+.rel-row .rel-type { flex: 1 1 120px; padding: 9px 10px; background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; font-size: 13px; }
 .rel-row .rel-remove { border: 1px solid var(--line); background: var(--panel); width: 34px; height: 34px; border-radius: 8px; cursor: pointer; color: var(--muted); flex: none; }
 .add-rel-btn { border: 1px dashed var(--line); background: none; padding: 8px 14px; border-radius: 8px; cursor: pointer; font-size: 13px; color: var(--muted); margin-top: 4px; }
 .detail-actions { display: flex; gap: 10px; flex-wrap: wrap; }
@@ -181,9 +182,21 @@ main { padding: 0 20px 70px; }
 .mf-order button:disabled { opacity: .3; cursor: default; }
 .mf-label-input { flex: 1; padding: 7px 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 7px; font-size: 13px; }
 .mf-label-static { flex: 1; font-size: 13.5px; }
-.mf-type { font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: var(--muted); text-transform: uppercase; background: var(--chip); padding: 3px 8px; border-radius: 20px; }
+.mf-type { font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: var(--muted); text-transform: uppercase; background: var(--chip); padding: 3px 8px; border-radius: 20px; border: none; appearance: none; cursor: pointer; }
 .mf-builtin { font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: var(--muted); width: 52px; text-align: center; }
 .mf-delete { border: 1px solid var(--line); background: var(--panel); width: 52px; padding: 6px 0; border-radius: 7px; cursor: pointer; color: var(--danger); font-size: 12px; }
+
+/* ---------- map view ---------- */
+.map-shell { position: relative; margin: 16px auto 0; max-width: 1200px; border: 1px solid var(--line); border-radius: 13px; overflow: hidden; background: var(--bg); animation: drin .3s ease both; }
+#map-svg { display: block; width: 100%; height: 70vh; }
+.map-edge { stroke-width: 1.25; opacity: .7; }
+.map-node circle { cursor: grab; transition: r .12s ease; }
+.map-node:active circle { cursor: grabbing; }
+@media (hover: hover) { .map-node:hover circle { r: 9; } }
+.map-node-label { font-family: 'IBM Plex Mono', monospace; font-size: 10px; fill: var(--muted); pointer-events: none; user-select: none; }
+.map-legend { position: absolute; left: 16px; bottom: 16px; display: flex; flex-direction: column; gap: 6px; padding: 10px 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 12px 30px -20px rgba(0,0,0,.8); }
+.map-legend-row { display: flex; align-items: center; gap: 8px; font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.map-legend-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
 
 @media (max-width: 640px) {
   header { padding: 11px 14px; }
@@ -199,6 +212,7 @@ main { padding: 0 20px 70px; }
   <input id="search-input" placeholder="Search name, role, species, tag…">
   <div class="theme-toggle" id="theme-toggle"></div>
   <button class="btn-solid" id="new-btn">+ New</button>
+  <button class="btn-line" id="map-btn">Map</button>
   <button class="btn-line" id="backup-btn" title="Backup status"><span class="dot" id="backup-dot"></span>Backup</button>
   <button class="btn-line" id="user-btn" title="Switch user"></button>
 </header>
@@ -237,6 +251,20 @@ const THEMES = {
 };
 const TYPE_LABELS = { text: 'Short text', textarea: 'Paragraph', number: 'Number', select: 'Select', date: 'Date', color: 'Colour' };
 const SECTION_ORDER = ['Identity', 'Description', 'Notes', 'Custom'];
+const PRESET_RELATIONSHIP_TYPES = ['Family', 'Friend', 'Romantic', 'Rival', 'Enemy', 'Ally', 'Mentor', 'Colleague'];
+
+// Deterministic — same type string always gets the same color within a
+// theme, and it's automatically theme-consistent since it draws from the
+// same swatch array the colour-field popover uses. Untyped relationships
+// get var(--muted) instead of a hashed color so they read as genuinely
+// uncategorized rather than colliding with a real type's color.
+function colorForType(type) {
+  if (!type) return 'var(--muted)';
+  const swatches = (THEMES[STATE.theme] && THEMES[STATE.theme].swatches) || ['var(--accent)'];
+  let hash = 0;
+  for (let i = 0; i < type.length; i++) hash = (hash * 31 + type.charCodeAt(i)) >>> 0;
+  return swatches[hash % swatches.length];
+}
 
 let STATE = {
   fields: [], characters: [], status: null,
@@ -304,6 +332,10 @@ function applyTheme(id) {
   // Colour-field swatch options are theme-specific — refresh them in place
   // if a character's detail view is already open when the theme changes.
   if (STATE.view === 'detail' && STATE.selectedDetail) redrawFieldSections();
+  // Map edge/legend colors are hashed from the theme's swatch array (not
+  // CSS vars), so they need an explicit recolor — node fills/strokes use
+  // var(--accent)/var(--panel) and pick up the new theme automatically.
+  if (STATE.view === 'map') recolorMap();
 }
 
 // ---------------------------------------------------------------- header (built once, updated in place)
@@ -313,6 +345,7 @@ function buildHeaderOnce() {
   const search = document.getElementById('search-input');
   search.addEventListener('input', e => { STATE.search = e.target.value; renderGridResults(); });
   document.getElementById('new-btn').addEventListener('click', createNewCharacter);
+  document.getElementById('map-btn').addEventListener('click', () => goMap());
   document.getElementById('backup-btn').addEventListener('click', openBackupModal);
   document.getElementById('user-btn').addEventListener('click', async () => {
     try { await api('POST', '/logout'); } catch (e) {}
@@ -445,6 +478,26 @@ async function goDetail(id) {
   }
   updateCharCount();
   renderDetailView();
+}
+
+async function goMap() {
+  STATE.view = 'map';
+  STATE.selectedId = null;
+  STATE.selectedDetail = null;
+  document.getElementById('main-content').innerHTML = `<div class="empty-state"><div class="title">Loading…</div></div>`;
+  let characters, relationships;
+  try {
+    [characters, relationships] = await Promise.all([
+      api('GET', '/characters'),
+      api('GET', '/relationships'),
+    ]);
+  } catch (e) {
+    document.getElementById('main-content').innerHTML = `<div class="empty-state"><div class="title">Could not load the map</div><p>${escapeHtml(e.message)}</p></div>`;
+    return;
+  }
+  updateCharCount();
+  renderTagRow();
+  renderMapView(characters, relationships);
 }
 
 async function createNewCharacter() {
@@ -898,6 +951,47 @@ function wireColorControl(id, key) {
 
 // ---- relationships ----
 
+function relTypeSelectHTML(currentType) {
+  const isKnownOrEmpty = !currentType || PRESET_RELATIONSHIP_TYPES.includes(currentType);
+  const customOpt = !isKnownOrEmpty
+    ? `<option value="${escapeHtml(currentType)}" selected>${escapeHtml(currentType)}</option>` : '';
+  const presetOpts = PRESET_RELATIONSHIP_TYPES.map(t =>
+    `<option value="${escapeHtml(t)}" ${t === currentType ? 'selected' : ''}>${escapeHtml(t)}</option>`
+  ).join('');
+  return `<select class="rel-type" data-role="type">
+    <option value="">— type —</option>${customOpt}${presetOpts}<option value="__custom__">Custom…</option>
+  </select>`;
+}
+
+// Wires a type control in place — swapping select→text input for a custom
+// value is a client-side-only state change (nothing to save until the
+// input blurs), same conditional-reveal pattern the Add Field modal uses
+// for its select-type options textarea.
+function wireRelTypeControl(wrap, relId, currentType) {
+  const select = wrap.querySelector('select');
+  if (!select) return;
+  select.addEventListener('change', () => {
+    if (select.value !== '__custom__') {
+      updateRelationship(relId, { type: select.value });
+      return;
+    }
+    wrap.innerHTML = `<input class="rel-type" type="text" data-role="type-custom" placeholder="type…">`;
+    const input = wrap.querySelector('input');
+    input.focus();
+    input.addEventListener('blur', async () => {
+      const v = input.value.trim();
+      if (v) {
+        await updateRelationship(relId, { type: v });
+        redrawRelationships();
+      } else {
+        wrap.innerHTML = relTypeSelectHTML(currentType);
+        wireRelTypeControl(wrap, relId, currentType);
+      }
+    });
+    input.addEventListener('keydown', e => { if (e.key === 'Enter') input.blur(); });
+  });
+}
+
 function redrawRelationships() {
   const d = STATE.selectedDetail;
   const el = document.getElementById('relationships-list');
@@ -909,13 +1003,16 @@ function redrawRelationships() {
         ${otherChars.map(c => `<option value="${c.id}" ${c.id === r.related_id ? 'selected' : ''}>${escapeHtml(c.name || 'Unnamed')}</option>`).join('')}
       </select>
       <input data-role="label" value="${escapeHtml(r.label || '')}" placeholder="how are they connected?">
+      <span data-role="type-wrap">${relTypeSelectHTML(r.type || '')}</span>
       <button class="rel-remove" data-role="remove">&times;</button>
     </div>`).join('');
 
   el.querySelectorAll('.rel-row').forEach(row => {
     const relId = Number(row.dataset.id);
+    const r = (d.relationships || []).find(x => x.id === relId);
     row.querySelector('[data-role=target]').addEventListener('change', e => updateRelationship(relId, { related_id: e.target.value ? Number(e.target.value) : null }));
     row.querySelector('[data-role=label]').addEventListener('change', e => updateRelationship(relId, { label: e.target.value }));
+    wireRelTypeControl(row.querySelector('[data-role=type-wrap]'), relId, (r && r.type) || '');
     row.querySelector('[data-role=remove]').addEventListener('click', () => removeRelationship(relId));
   });
 }
@@ -963,6 +1060,236 @@ async function handleDeleteCharacter() {
   } catch (e) {
     alert('Delete failed: ' + e.message);
   }
+}
+
+// ---------------------------------------------------------------- map view
+
+// Module-level so the drag state survives across re-renders without
+// re-registering global listeners each time (same reasoning as the
+// color-popover's single document-level click listener).
+const MAP = {
+  nodes: null, edges: null, nodeById: null, svg: null, raf: null, W: 1000, H: 640,
+  dragNode: null, dragMoved: false, dragStartX: 0, dragStartY: 0,
+};
+
+function dedupeMapEdges(relationships) {
+  const byPair = new Map();
+  relationships.forEach(r => {
+    if (!r.related_id) return;
+    const key = r.character_id < r.related_id ? `${r.character_id}:${r.related_id}` : `${r.related_id}:${r.character_id}`;
+    const labelText = [r.type, r.label].filter(Boolean).join(' — ') || '(unlabeled)';
+    const existing = byPair.get(key);
+    if (existing) existing.labels.push(labelText);
+    else byPair.set(key, { a: r.character_id, b: r.related_id, type: r.type || '', labels: [labelText] });
+  });
+  return [...byPair.values()];
+}
+
+function renderMapView(characters, relationships) {
+  if (MAP.raf) cancelAnimationFrame(MAP.raf);
+  const W = MAP.W, H = MAP.H;
+
+  const nodes = characters.map((c, i) => {
+    const angle = (i / Math.max(characters.length, 1)) * Math.PI * 2;
+    return {
+      id: c.id, name: c.name || 'Unnamed',
+      color: isValidColor(c.accent_colour) ? c.accent_colour : null,
+      x: W / 2 + Math.cos(angle) * 140 + (Math.random() - 0.5) * 40,
+      y: H / 2 + Math.sin(angle) * 140 + (Math.random() - 0.5) * 40,
+      vx: 0, vy: 0, pinned: false,
+    };
+  });
+  const nodeById = new Map(nodes.map(n => [n.id, n]));
+  const edges = dedupeMapEdges(relationships).filter(e => nodeById.has(e.a) && nodeById.has(e.b));
+  const typesPresent = [...new Set(edges.map(e => e.type).filter(Boolean))].sort();
+
+  document.getElementById('main-content').innerHTML = characters.length === 0
+    ? `<div class="empty-state"><div class="title">No characters yet</div><p>Create a character to see them appear on the map.</p></div>`
+    : `<div class="map-shell">
+        <svg id="map-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">
+          <defs>
+            <filter id="map-grain" x="0" y="0" width="100%" height="100%">
+              <feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" stitchTiles="stitch" result="noise"/>
+              <feColorMatrix in="noise" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0.6 0.6 0.6 0 0"/>
+            </filter>
+          </defs>
+          <rect x="0" y="0" width="${W}" height="${H}" fill="var(--ink)" filter="url(#map-grain)" opacity="0.05"/>
+          <g id="map-edges"></g>
+          <g id="map-nodes"></g>
+        </svg>
+        <div class="map-legend" id="map-legend"></div>
+      </div>`;
+
+  if (characters.length === 0) return;
+
+  MAP.nodes = nodes;
+  MAP.edges = edges;
+  MAP.nodeById = nodeById;
+  MAP.svg = document.getElementById('map-svg');
+
+  drawMapLegend(typesPresent);
+  drawMapEdgesAndNodes();
+  wireMapInteractions();
+  runMapSimulation();
+}
+
+function drawMapLegend(types) {
+  const el = document.getElementById('map-legend');
+  if (!el) return;
+  el.innerHTML = types.map(t =>
+    `<div class="map-legend-row"><span class="map-legend-dot" style="background:${colorForType(t)}"></span>${escapeHtml(t)}</div>`
+  ).join('');
+}
+
+function drawMapEdgesAndNodes() {
+  const edgesG = document.getElementById('map-edges');
+  const nodesG = document.getElementById('map-nodes');
+  const svgNS = 'http://www.w3.org/2000/svg';
+  edgesG.innerHTML = '';
+  nodesG.innerHTML = '';
+
+  MAP.edges.forEach(e => {
+    const line = document.createElementNS(svgNS, 'line');
+    line.setAttribute('class', 'map-edge');
+    line.setAttribute('stroke', colorForType(e.type));
+    const title = document.createElementNS(svgNS, 'title');
+    title.textContent = e.labels.join('; ');
+    line.appendChild(title);
+    edgesG.appendChild(line);
+    e._el = line;
+  });
+
+  MAP.nodes.forEach(n => {
+    const g = document.createElementNS(svgNS, 'g');
+    g.setAttribute('class', 'map-node');
+    g.setAttribute('data-id', n.id);
+
+    const circle = document.createElementNS(svgNS, 'circle');
+    circle.setAttribute('r', '7');
+    circle.setAttribute('fill', n.color || 'var(--accent)');
+    circle.setAttribute('stroke', 'var(--panel)');
+    circle.setAttribute('stroke-width', '2');
+    g.appendChild(circle);
+
+    const text = document.createElementNS(svgNS, 'text');
+    text.setAttribute('class', 'map-node-label');
+    text.setAttribute('x', '10');
+    text.setAttribute('y', '4');
+    text.textContent = n.name;
+    g.appendChild(text);
+
+    nodesG.appendChild(g);
+    n._el = g;
+  });
+
+  updateMapPositions();
+}
+
+function updateMapPositions() {
+  MAP.edges.forEach(e => {
+    const a = MAP.nodeById.get(e.a), b = MAP.nodeById.get(e.b);
+    if (!a || !b || !e._el) return;
+    e._el.setAttribute('x1', a.x); e._el.setAttribute('y1', a.y);
+    e._el.setAttribute('x2', b.x); e._el.setAttribute('y2', b.y);
+  });
+  MAP.nodes.forEach(n => { if (n._el) n._el.setAttribute('transform', `translate(${n.x},${n.y})`); });
+}
+
+function stepMapSimulation() {
+  const { nodes, edges, W, H } = MAP;
+  const REPULSION = 1800, SPRING_LEN = 90, SPRING_K = 0.02, CENTER_K = 0.0005, DAMPING = 0.85;
+
+  for (let i = 0; i < nodes.length; i++) {
+    for (let j = i + 1; j < nodes.length; j++) {
+      const a = nodes[i], b = nodes[j];
+      const dx = a.x - b.x, dy = a.y - b.y;
+      const distSq = Math.max(dx * dx + dy * dy, 1);
+      const dist = Math.sqrt(distSq);
+      const force = REPULSION / distSq;
+      const fx = (dx / dist) * force, fy = (dy / dist) * force;
+      if (!a.pinned) { a.vx += fx; a.vy += fy; }
+      if (!b.pinned) { b.vx -= fx; b.vy -= fy; }
+    }
+  }
+
+  edges.forEach(e => {
+    const a = MAP.nodeById.get(e.a), b = MAP.nodeById.get(e.b);
+    if (!a || !b) return;
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+    const force = (dist - SPRING_LEN) * SPRING_K;
+    const fx = (dx / dist) * force, fy = (dy / dist) * force;
+    if (!a.pinned) { a.vx += fx; a.vy += fy; }
+    if (!b.pinned) { b.vx -= fx; b.vy -= fy; }
+  });
+
+  nodes.forEach(n => {
+    if (n.pinned) return;
+    n.vx += (W / 2 - n.x) * CENTER_K;
+    n.vy += (H / 2 - n.y) * CENTER_K;
+    n.vx *= DAMPING; n.vy *= DAMPING;
+    n.x += n.vx; n.y += n.vy;
+    n.x = Math.max(20, Math.min(W - 20, n.x));
+    n.y = Math.max(20, Math.min(H - 20, n.y));
+  });
+}
+
+function runMapSimulation() {
+  let ticks = 0;
+  const maxTicks = 220;
+  function frame() {
+    if (STATE.view !== 'map') { MAP.raf = null; return; }
+    stepMapSimulation();
+    updateMapPositions();
+    ticks++;
+    MAP.raf = ticks < maxTicks ? requestAnimationFrame(frame) : null;
+  }
+  MAP.raf = requestAnimationFrame(frame);
+}
+
+function mapSvgPoint(evt) {
+  const pt = MAP.svg.createSVGPoint();
+  pt.x = evt.clientX; pt.y = evt.clientY;
+  return pt.matrixTransform(MAP.svg.getScreenCTM().inverse());
+}
+
+// Registered once at load — checks shared MAP state rather than a
+// per-render closure, so re-entering the map view never stacks up
+// duplicate document-level listeners.
+document.addEventListener('mousemove', evt => {
+  if (!MAP.dragNode) return;
+  if (!MAP.dragMoved && Math.hypot(evt.clientX - MAP.dragStartX, evt.clientY - MAP.dragStartY) > 4) {
+    MAP.dragMoved = true;
+    MAP.dragNode.pinned = true;
+  }
+  if (!MAP.dragMoved) return;
+  const p = mapSvgPoint(evt);
+  MAP.dragNode.x = p.x; MAP.dragNode.y = p.y;
+  MAP.dragNode.vx = 0; MAP.dragNode.vy = 0;
+  updateMapPositions();
+  if (!MAP.raf) runMapSimulation();
+});
+document.addEventListener('mouseup', () => {
+  if (MAP.dragNode && !MAP.dragMoved) goDetail(MAP.dragNode.id);
+  MAP.dragNode = null;
+});
+
+function wireMapInteractions() {
+  document.querySelectorAll('#map-nodes .map-node').forEach(g => {
+    const id = Number(g.dataset.id);
+    g.addEventListener('mousedown', evt => {
+      MAP.dragNode = MAP.nodeById.get(id);
+      MAP.dragMoved = false;
+      MAP.dragStartX = evt.clientX; MAP.dragStartY = evt.clientY;
+      evt.preventDefault();
+    });
+  });
+}
+
+function recolorMap() {
+  if (!MAP.edges || !MAP.svg) return;
+  MAP.edges.forEach(e => { if (e._el) e._el.setAttribute('stroke', colorForType(e.type)); });
+  drawMapLegend([...new Set(MAP.edges.map(e => e.type).filter(Boolean))].sort());
 }
 
 // ---------------------------------------------------------------- modal: add field
@@ -1066,7 +1393,11 @@ function drawManageFieldsList() {
       ${f.is_builtin
         ? `<span class="mf-label-static">${escapeHtml(f.label)}</span>`
         : `<input class="mf-label-input" data-role="rename" value="${escapeHtml(f.label)}">`}
-      <span class="mf-type">${escapeHtml(TYPE_LABELS[f.type] || f.type)}</span>
+      <select class="mf-type" data-role="type" title="Change type">
+        ${Object.entries(TYPE_LABELS).map(([val, label]) =>
+          `<option value="${val}" ${val === f.type ? 'selected' : ''}>${escapeHtml(label)}</option>`
+        ).join('')}
+      </select>
       ${f.is_builtin ? `<span class="mf-builtin">built-in</span>` : ''}
       <button class="mf-delete" data-role="delete">delete</button>
     </div>`).join('');
@@ -1079,6 +1410,8 @@ function drawManageFieldsList() {
     if (downBtn) downBtn.addEventListener('click', () => moveField(fid, 1));
     const renameInput = row.querySelector('[data-role=rename]');
     if (renameInput) renameInput.addEventListener('change', () => renameField(fid, renameInput.value));
+    const typeSelect = row.querySelector('[data-role=type]');
+    if (typeSelect) typeSelect.addEventListener('change', () => changeFieldType(fid, typeSelect.value));
     const deleteBtn = row.querySelector('[data-role=delete]');
     if (deleteBtn) deleteBtn.addEventListener('click', () => handleDeleteField(fid));
   });
@@ -1110,6 +1443,17 @@ async function renameField(id, label) {
     alert('Rename failed: ' + e.message);
     drawManageFieldsList();
   }
+}
+
+async function changeFieldType(id, type) {
+  try {
+    await api('PUT', `/fields/${id}`, { type });
+    STATE.fields = await api('GET', '/fields');
+    if (STATE.view === 'detail') redrawFieldSections();
+  } catch (e) {
+    alert('Could not change type: ' + e.message);
+  }
+  drawManageFieldsList();
 }
 
 async function handleDeleteField(id) {

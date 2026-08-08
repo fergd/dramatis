@@ -76,6 +76,9 @@ CHARACTER_IMAGES_COLUMNS = {
     "sort_order": "INTEGER DEFAULT 0",
     "created_at": "TEXT DEFAULT CURRENT_TIMESTAMP",
 }
+RELATIONSHIPS_COLUMNS = {
+    "type": "TEXT NOT NULL DEFAULT ''",
+}
 
 # Built-in fields seeded on first run, grouped into the sections the detail
 # view renders. One place to tweak the starting set — order here is the
@@ -204,6 +207,7 @@ def get_conn() -> sqlite3.Connection:
     conn.executescript(Path("schema.sql").read_text())
     _backfill_character_owner(conn)
     _migrate_table(conn, "character_images", CHARACTER_IMAGES_COLUMNS)
+    _migrate_table(conn, "relationships", RELATIONSHIPS_COLUMNS)
     return conn
 
 
@@ -248,6 +252,7 @@ class FieldIn(BaseModel):
 
 class FieldUpdate(BaseModel):
     label: Optional[str] = None
+    type: Optional[str] = None
     options: Optional[list] = None
     sort_order: Optional[int] = None
     section: Optional[str] = None
@@ -256,11 +261,13 @@ class FieldUpdate(BaseModel):
 class RelationshipIn(BaseModel):
     related_id: Optional[int] = None
     label: Optional[str] = ""
+    type: Optional[str] = ""
 
 
 class RelationshipUpdate(BaseModel):
     related_id: Optional[int] = None
     label: Optional[str] = None
+    type: Optional[str] = None
 
 
 class RestoreIn(BaseModel):
@@ -336,13 +343,16 @@ def _primary_image_public_id(conn: sqlite3.Connection, character_id: int) -> Opt
 
 def _character_relationships(conn: sqlite3.Connection, character_id: int) -> list:
     rows = conn.execute(
-        "SELECT r.id AS id, r.related_id AS related_id, r.label AS label, c.name AS related_name "
+        "SELECT r.id AS id, r.related_id AS related_id, r.label AS label, r.type AS type, c.name AS related_name "
         "FROM relationships r LEFT JOIN characters c ON c.id = r.related_id "
         "WHERE r.character_id = ? ORDER BY r.sort_order, r.id",
         (character_id,),
     ).fetchall()
     return [
-        {"id": r["id"], "related_id": r["related_id"], "related_name": r["related_name"], "label": r["label"]}
+        {
+            "id": r["id"], "related_id": r["related_id"], "related_name": r["related_name"],
+            "label": r["label"], "type": r["type"],
+        }
         for r in rows
     ]
 
@@ -807,12 +817,12 @@ def create_relationship(character_id: int, body: RelationshipIn, owner: str = De
             (character_id,),
         ).fetchone()[0]
         cur = conn.execute(
-            "INSERT INTO relationships (character_id, related_id, label, sort_order) VALUES (?, ?, ?, ?)",
-            (character_id, body.related_id, (body.label or "").strip(), max_sort + 1),
+            "INSERT INTO relationships (character_id, related_id, label, type, sort_order) VALUES (?, ?, ?, ?, ?)",
+            (character_id, body.related_id, (body.label or "").strip(), (body.type or "").strip(), max_sort + 1),
         )
         conn.commit()
         rel = conn.execute(
-            "SELECT r.id AS id, r.related_id AS related_id, r.label AS label, c.name AS related_name "
+            "SELECT r.id AS id, r.related_id AS related_id, r.label AS label, r.type AS type, c.name AS related_name "
             "FROM relationships r LEFT JOIN characters c ON c.id = r.related_id WHERE r.id = ?",
             (cur.lastrowid,),
         ).fetchone()
@@ -845,13 +855,14 @@ def update_relationship(
             _check_same_owner_character(conn, body.related_id, owner)
         related_id = body.related_id if body.related_id is not None else row["related_id"]
         label = body.label.strip() if body.label is not None else row["label"]
+        rel_type = body.type.strip() if body.type is not None else row["type"]
         conn.execute(
-            "UPDATE relationships SET related_id = ?, label = ? WHERE id = ?",
-            (related_id, label, relationship_id),
+            "UPDATE relationships SET related_id = ?, label = ?, type = ? WHERE id = ?",
+            (related_id, label, rel_type, relationship_id),
         )
         conn.commit()
         rel = conn.execute(
-            "SELECT r.id AS id, r.related_id AS related_id, r.label AS label, c.name AS related_name "
+            "SELECT r.id AS id, r.related_id AS related_id, r.label AS label, r.type AS type, c.name AS related_name "
             "FROM relationships r LEFT JOIN characters c ON c.id = r.related_id WHERE r.id = ?",
             (relationship_id,),
         ).fetchone()
@@ -880,6 +891,27 @@ def delete_relationship(character_id: int, relationship_id: int, owner: str = De
     finally:
         conn.close()
     schedule_backup()
+
+
+@app.get("/relationships")
+def list_relationships(owner: str = Depends(get_current_owner)):
+    """Every relationship edge across the owner's whole cast in one call —
+    used by the character map, which needs the full graph rather than one
+    character's relationships at a time."""
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            "SELECT r.id AS id, r.character_id AS character_id, c1.name AS character_name, "
+            "r.related_id AS related_id, c2.name AS related_name, r.label AS label, r.type AS type "
+            "FROM relationships r "
+            "JOIN characters c1 ON c1.id = r.character_id "
+            "LEFT JOIN characters c2 ON c2.id = r.related_id "
+            "WHERE c1.owner = ?",
+            (owner,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -950,13 +982,20 @@ def update_field(field_id: int, body: FieldUpdate, owner: str = Depends(get_curr
             raise HTTPException(status_code=404, detail="Field not found")
 
         label = body.label.strip() if body.label is not None and body.label.strip() else row["label"]
+        field_type = row["type"]
+        if body.type is not None:
+            if body.type not in VALID_FIELD_TYPES:
+                raise HTTPException(status_code=400, detail=f"Invalid type, must be one of {sorted(VALID_FIELD_TYPES)}")
+            if body.type == "select" and not (body.options or row["options"]):
+                raise HTTPException(status_code=400, detail="Select fields require at least one option")
+            field_type = body.type
         options = json.dumps(body.options) if body.options is not None else row["options"]
         sort_order = body.sort_order if body.sort_order is not None else row["sort_order"]
         section = body.section.strip() if body.section is not None and body.section.strip() else row["section"]
 
         conn.execute(
-            "UPDATE fields SET label = ?, options = ?, sort_order = ?, section = ? WHERE id = ?",
-            (label, options, sort_order, section, field_id),
+            "UPDATE fields SET label = ?, type = ?, options = ?, sort_order = ?, section = ? WHERE id = ?",
+            (label, field_type, options, sort_order, section, field_id),
         )
         conn.commit()
         field = _field_row_to_dict(conn.execute("SELECT * FROM fields WHERE id = ?", (field_id,)).fetchone())
