@@ -76,9 +76,6 @@ CHARACTER_IMAGES_COLUMNS = {
     "sort_order": "INTEGER DEFAULT 0",
     "created_at": "TEXT DEFAULT CURRENT_TIMESTAMP",
 }
-RELATIONSHIPS_COLUMNS = {
-    "type": "TEXT NOT NULL DEFAULT ''",
-}
 
 # Built-in fields seeded on first run, grouped into the sections the detail
 # view renders. One place to tweak the starting set — order here is the
@@ -110,6 +107,118 @@ THUMB_IMAGE_WIDTH = 200
 def slugify(label: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "_", label.strip().lower()).strip("_")
     return slug or "field"
+
+
+# Fixed, theme-independent colors — "distinct, muted-but-legible hues" the
+# author learns once, not derived from whichever of the 5 UI themes is
+# active. Antagonistic/Alliance deliberately echo the app's existing
+# --danger/--amber semantic colors.
+CATEGORY_COLORS = {
+    "Family": "#6b9d5c",
+    "Romantic": "#d16b8f",
+    "Friendship / Social": "#5b8ec9",
+    "Professional": "#4fa898",
+    "Alliance / Power": "#c99a3a",
+    "Antagonistic": "#c86a5f",
+    "Other": "#8a8a8a",
+}
+RELATIONSHIP_CATEGORIES = list(CATEGORY_COLORS.keys())
+
+# The role catalog. Every asymmetric pair gets both directions as their
+# own selectable entries (e.g. both "employer" and "employee") even where
+# the owner's spec only wrote out one direction per row in prose — a role
+# needs to be pickable from *either* character's profile. label/category
+# are what the UI shows; inverse must be a real key in this same dict.
+RELATIONSHIP_ROLES = {
+    # Family
+    "parent": {"label": "Parent", "category": "Family", "inverse": "child"},
+    "child": {"label": "Child", "category": "Family", "inverse": "parent"},
+    "sibling": {"label": "Sibling", "category": "Family", "inverse": "sibling"},
+    "spouse": {"label": "Spouse", "category": "Family", "inverse": "spouse"},
+    "grandparent": {"label": "Grandparent", "category": "Family", "inverse": "grandchild"},
+    "grandchild": {"label": "Grandchild", "category": "Family", "inverse": "grandparent"},
+    "aunt_uncle": {"label": "Aunt/Uncle", "category": "Family", "inverse": "niece_nephew"},
+    "niece_nephew": {"label": "Niece/Nephew", "category": "Family", "inverse": "aunt_uncle"},
+    "cousin": {"label": "Cousin", "category": "Family", "inverse": "cousin"},
+    "step_parent": {"label": "Step-parent", "category": "Family", "inverse": "step_child"},
+    "step_child": {"label": "Step-child", "category": "Family", "inverse": "step_parent"},
+    "guardian": {"label": "Guardian", "category": "Family", "inverse": "ward"},
+    "ward": {"label": "Ward", "category": "Family", "inverse": "guardian"},
+    "in_law": {"label": "In-law", "category": "Family", "inverse": "in_law"},
+    # Romantic
+    "partner": {"label": "Partner", "category": "Romantic", "inverse": "partner"},
+    "fiance": {"label": "Fiancé(e)", "category": "Romantic", "inverse": "fiance"},
+    "lover": {"label": "Lover", "category": "Romantic", "inverse": "lover"},
+    "ex_partner": {"label": "Ex-partner", "category": "Romantic", "inverse": "ex_partner"},
+    "unrequited": {"label": "Unrequited (pines for)", "category": "Romantic", "inverse": "object_of_affection"},
+    "object_of_affection": {"label": "Object of affection", "category": "Romantic", "inverse": "unrequited"},
+    # Friendship / Social
+    "friend": {"label": "Friend", "category": "Friendship / Social", "inverse": "friend"},
+    "best_friend": {"label": "Best friend", "category": "Friendship / Social", "inverse": "best_friend"},
+    "confidant": {"label": "Confidant", "category": "Friendship / Social", "inverse": "confidant"},
+    "acquaintance": {"label": "Acquaintance", "category": "Friendship / Social", "inverse": "acquaintance"},
+    "neighbour": {"label": "Neighbour", "category": "Friendship / Social", "inverse": "neighbour"},
+    # Professional
+    "colleague": {"label": "Colleague", "category": "Professional", "inverse": "colleague"},
+    "employer": {"label": "Employer", "category": "Professional", "inverse": "employee"},
+    "employee": {"label": "Employee", "category": "Professional", "inverse": "employer"},
+    "superior": {"label": "Superior", "category": "Professional", "inverse": "subordinate"},
+    "subordinate": {"label": "Subordinate", "category": "Professional", "inverse": "superior"},
+    "mentor": {"label": "Mentor", "category": "Professional", "inverse": "mentee"},
+    "mentee": {"label": "Mentee", "category": "Professional", "inverse": "mentor"},
+    "teacher": {"label": "Teacher", "category": "Professional", "inverse": "student"},
+    "student": {"label": "Student", "category": "Professional", "inverse": "teacher"},
+    "business_partner": {"label": "Business partner", "category": "Professional", "inverse": "business_partner"},
+    "client": {"label": "Client", "category": "Professional", "inverse": "service_provider"},
+    "service_provider": {"label": "Service provider", "category": "Professional", "inverse": "client"},
+    # Alliance / Power
+    "ally": {"label": "Ally", "category": "Alliance / Power", "inverse": "ally"},
+    "leader": {"label": "Leader", "category": "Alliance / Power", "inverse": "follower"},
+    "follower": {"label": "Follower", "category": "Alliance / Power", "inverse": "leader"},
+    "master": {"label": "Master", "category": "Alliance / Power", "inverse": "servant"},
+    "servant": {"label": "Servant", "category": "Alliance / Power", "inverse": "master"},
+    "patron": {"label": "Patron", "category": "Alliance / Power", "inverse": "protege"},
+    "protege": {"label": "Protégé", "category": "Alliance / Power", "inverse": "patron"},
+    "captor": {"label": "Captor", "category": "Alliance / Power", "inverse": "captive"},
+    "captive": {"label": "Captive", "category": "Alliance / Power", "inverse": "captor"},
+    # Antagonistic
+    "rival": {"label": "Rival", "category": "Antagonistic", "inverse": "rival"},
+    "enemy": {"label": "Enemy", "category": "Antagonistic", "inverse": "enemy"},
+    "nemesis": {"label": "Nemesis", "category": "Antagonistic", "inverse": "nemesis"},
+    "betrayer": {"label": "Betrayer", "category": "Antagonistic", "inverse": "betrayed"},
+    "betrayed": {"label": "Betrayed", "category": "Antagonistic", "inverse": "betrayer"},
+}
+
+
+def _check_relationship_catalog_integrity():
+    """A hand-written ~50-entry catalog is exactly where a typo hides
+    silently — crash on startup rather than misfile relationships later."""
+    for key, role in RELATIONSHIP_ROLES.items():
+        inv_key = role["inverse"]
+        if inv_key not in RELATIONSHIP_ROLES:
+            raise AssertionError(f"relationship role {key!r} has unknown inverse {inv_key!r}")
+        inv_role = RELATIONSHIP_ROLES[inv_key]
+        if inv_role["inverse"] != key:
+            raise AssertionError(f"relationship role {key!r}/{inv_key!r} inverse is not involutive")
+        if inv_role["category"] != role["category"]:
+            raise AssertionError(f"relationship role {key!r}/{inv_key!r} disagree on category")
+        if role["category"] not in CATEGORY_COLORS:
+            raise AssertionError(f"relationship role {key!r} has unknown category {role['category']!r}")
+
+
+_check_relationship_catalog_integrity()
+
+
+def relationship_role_label(role_key: str, custom_label: Optional[str]) -> str:
+    if role_key.startswith("custom:"):
+        return custom_label or "Related"
+    role = RELATIONSHIP_ROLES.get(role_key)
+    return role["label"] if role else role_key
+
+
+def relationship_category(role_key: str) -> str:
+    role = RELATIONSHIP_ROLES.get(role_key)
+    return role["category"] if role else "Other"
 
 
 def _migrate_table(conn: sqlite3.Connection, table_name: str, columns: dict):
@@ -194,20 +303,224 @@ def _backfill_character_owner(conn: sqlite3.Connection):
     conn.commit()
 
 
+# Case-insensitive bare-word/phrase -> catalog role key, used only by the
+# one-time relationships migration below. Covers the spec's own examples
+# plus the rest of the catalog's bare labels.
+LEGACY_LABEL_TO_ROLE = {
+    "father": "parent", "mother": "parent", "dad": "parent", "mom": "parent", "papa": "parent", "mama": "parent",
+    "son": "child", "daughter": "child",
+    "brother": "sibling", "sister": "sibling", "sibling": "sibling",
+    "husband": "spouse", "wife": "spouse", "spouse": "spouse",
+    "grandmother": "grandparent", "grandfather": "grandparent", "grandma": "grandparent", "grandpa": "grandparent",
+    "grandson": "grandchild", "granddaughter": "grandchild",
+    "aunt": "aunt_uncle", "uncle": "aunt_uncle",
+    "niece": "niece_nephew", "nephew": "niece_nephew",
+    "cousin": "cousin",
+    "stepmother": "step_parent", "stepfather": "step_parent", "step-mother": "step_parent", "step-father": "step_parent",
+    "stepson": "step_child", "stepdaughter": "step_child", "step-son": "step_child", "step-daughter": "step_child",
+    "guardian": "guardian", "ward": "ward",
+    "in-law": "in_law", "inlaw": "in_law",
+    "partner": "partner", "fiance": "fiance", "fiancee": "fiance", "fiancé": "fiance", "fiancée": "fiance",
+    "lover": "lover", "ex": "ex_partner", "ex-partner": "ex_partner", "expartner": "ex_partner",
+    "friend": "friend", "best friend": "best_friend", "bestfriend": "best_friend", "best-friend": "best_friend",
+    "confidant": "confidant", "confidante": "confidant",
+    "acquaintance": "acquaintance", "neighbour": "neighbour", "neighbor": "neighbour",
+    "colleague": "colleague", "coworker": "colleague", "co-worker": "colleague",
+    "employer": "employer", "boss": "employer", "employee": "employee",
+    "superior": "superior", "subordinate": "subordinate",
+    "mentor": "mentor", "mentee": "mentee", "teacher": "teacher", "student": "student", "pupil": "student",
+    "business partner": "business_partner", "businesspartner": "business_partner",
+    "client": "client", "customer": "client", "service provider": "service_provider",
+    "ally": "ally", "leader": "leader", "follower": "follower",
+    "master": "master", "servant": "servant",
+    "patron": "patron", "protege": "protege", "protégé": "protege",
+    "captor": "captor", "captive": "captive", "prisoner": "captive",
+    "rival": "rival", "enemy": "enemy", "nemesis": "nemesis",
+    "betrayer": "betrayer", "betrayed": "betrayed",
+}
+
+
+def _resolve_legacy_relationship_role(label: str, rtype: str) -> dict:
+    """label -> catalog role if it's a bare-word match (nothing lost, the
+    label *was* just the role's name); otherwise a custom role carrying
+    the original text, with category derived from the old `type` field
+    when possible so at least the map color is sensible."""
+    bare = (label or "").strip().lower()
+    role_key = LEGACY_LABEL_TO_ROLE.get(bare)
+    if role_key:
+        return {"role_key": role_key, "custom_label": None, "category": RELATIONSHIP_ROLES[role_key]["category"]}
+    custom_label = (label or "").strip() or (rtype or "").strip() or "Related"
+    rtype_stripped = (rtype or "").strip()
+    if rtype_stripped in ("Family", "Romantic"):
+        category = rtype_stripped
+    elif rtype_stripped.lower() in LEGACY_LABEL_TO_ROLE:
+        category = RELATIONSHIP_ROLES[LEGACY_LABEL_TO_ROLE[rtype_stripped.lower()]]["category"]
+    else:
+        category = "Other"
+    return {"role_key": None, "custom_label": custom_label, "category": category}
+
+
+def _apply_migrated_relationship(conn: sqlite3.Connection, from_id: int, to_id: int, resolved: dict):
+    if resolved["role_key"]:
+        _upsert_relationship(conn, from_id, to_id, resolved["role_key"])
+    else:
+        _upsert_relationship(
+            conn, from_id, to_id, "custom",
+            custom_label=resolved["custom_label"], category_override=resolved["category"],
+        )
+
+
+def _direct_insert_relationship(conn: sqlite3.Connection, char_a: int, char_b: int, a_resolved: dict, b_resolved: dict):
+    """Both sides of this tie are already explicit legacy data (one old
+    row on each side) — build the record directly instead of running
+    catalog-inverse auto-fill, which would silently produce two records
+    instead of one whenever the two old labels aren't real inverses of
+    each other. a_resolved is char_a's own claim about char_b
+    (-> role_a_to_b); b_resolved is char_b's own claim about char_a
+    (-> role_b_to_a)."""
+    if a_resolved["role_key"]:
+        role_a_to_b, custom_label_a_to_b = a_resolved["role_key"], None
+    else:
+        custom_label_a_to_b = a_resolved["custom_label"]
+        role_a_to_b = f"custom:{slugify(custom_label_a_to_b)}"
+    if b_resolved["role_key"]:
+        role_b_to_a, custom_label_b_to_a = b_resolved["role_key"], None
+    else:
+        custom_label_b_to_a = b_resolved["custom_label"]
+        role_b_to_a = f"custom:{slugify(custom_label_b_to_a)}"
+    now = _now()
+    conn.execute(
+        "INSERT INTO relationships "
+        "(char_a_id, char_b_id, role_a_to_b, role_b_to_a, category, custom_label_a_to_b, custom_label_b_to_a, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(char_a_id, char_b_id, role_a_to_b) DO UPDATE SET "
+        "role_b_to_a=excluded.role_b_to_a, category=excluded.category, "
+        "custom_label_a_to_b=excluded.custom_label_a_to_b, custom_label_b_to_a=excluded.custom_label_b_to_a, "
+        "updated_at=excluded.updated_at",
+        (char_a, char_b, role_a_to_b, role_b_to_a, a_resolved["category"], custom_label_a_to_b, custom_label_b_to_a, now, now),
+    )
+    conn.commit()
+
+
+def _pair_legacy_rows(x_rows: list, y_rows: list):
+    """x_rows/y_rows: resolved dicts for legacy rows in each direction of
+    one pair. Returns (matched_pairs, unmatched_x, unmatched_y).
+
+    Exactly one row on each side is unambiguous — they describe the same
+    tie, merge them regardless of category (no uncertainty: there's
+    nothing else on either side they could correspond to). Anything more
+    ambiguous (an old pair with more than one row already on some side —
+    i.e. multi-tie already present in the legacy data) falls back to
+    best-effort category matching; leftovers become independent records
+    via the normal catalog-inverse path."""
+    if len(x_rows) == 1 and len(y_rows) == 1:
+        return [(x_rows[0], y_rows[0])], [], []
+    matched, used_y = [], set()
+    for xr in x_rows:
+        match_i = next((i for i, yr in enumerate(y_rows) if i not in used_y and yr["category"] == xr["category"]), None)
+        if match_i is not None:
+            used_y.add(match_i)
+            matched.append((xr, y_rows[match_i]))
+    unmatched_x = [xr for xr in x_rows if not any(xr is m[0] for m in matched)]
+    unmatched_y = [yr for i, yr in enumerate(y_rows) if i not in used_y]
+    return matched, unmatched_x, unmatched_y
+
+
+def _migrate_relationships_reciprocal(conn: sqlite3.Connection):
+    """One-time rebuild: relationships used to be one directional row per
+    character; now it's one undirected record per pair-and-tie with
+    catalog roles (see schema.sql's comment on `relationships`). Guarded
+    by the presence of `char_a_id`, so it only runs once. Same
+    temp-table/drop/rename mechanism as _migrate_fields_to_owner, for the
+    same reason: new columns, new constraints, transformed data — not
+    something the ADD-COLUMN-only _migrate_table() helper can do."""
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(relationships)").fetchall()}
+    if not existing or "char_a_id" in existing:
+        return
+
+    legacy_rows = conn.execute(
+        "SELECT character_id, related_id, label, type FROM relationships"
+    ).fetchall()
+
+    conn.execute("PRAGMA foreign_keys = OFF")
+    conn.execute(
+        "CREATE TABLE relationships_new ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "char_a_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,"
+        "char_b_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,"
+        "role_a_to_b TEXT NOT NULL,"
+        "role_b_to_a TEXT NOT NULL,"
+        "category TEXT NOT NULL,"
+        "custom_label_a_to_b TEXT,"
+        "custom_label_b_to_a TEXT,"
+        "created_at TEXT DEFAULT CURRENT_TIMESTAMP,"
+        "updated_at TEXT DEFAULT CURRENT_TIMESTAMP,"
+        "CHECK(char_a_id < char_b_id),"
+        "UNIQUE(char_a_id, char_b_id, role_a_to_b))"
+    )
+    conn.execute("DROP TABLE relationships")
+    conn.execute("ALTER TABLE relationships_new RENAME TO relationships")
+    conn.commit()
+    conn.execute("PRAGMA foreign_keys = ON")
+
+    dropped_null = 0
+    by_pair: dict = {}
+    for row in legacy_rows:
+        char_id, related_id = row["character_id"], row["related_id"]
+        if related_id is None:
+            dropped_null += 1
+            continue
+        resolved = _resolve_legacy_relationship_role(row["label"], row["type"])
+        pair_key = (min(char_id, related_id), max(char_id, related_id))
+        by_pair.setdefault(pair_key, {}).setdefault(char_id, []).append(resolved)
+
+    stats = {"clean": 0, "custom": 0, "bidirectional_merged": 0, "multi_tie_fallback": 0}
+    for (x, y), by_char in by_pair.items():
+        x_rows, y_rows = by_char.get(x, []), by_char.get(y, [])
+        simple_pair = len(x_rows) == 1 and len(y_rows) == 1
+        ambiguous = len(x_rows) > 1 or len(y_rows) > 1  # more than one old row on a side — genuine uncertainty
+        matched, unmatched_x, unmatched_y = _pair_legacy_rows(x_rows, y_rows)
+        for a_resolved, b_resolved in matched:
+            _direct_insert_relationship(conn, x, y, a_resolved, b_resolved)
+            stats["bidirectional_merged" if simple_pair else "multi_tie_fallback"] += 1
+            for r in (a_resolved, b_resolved):
+                stats["clean" if r["role_key"] else "custom"] += 1
+        for r in unmatched_x:
+            _apply_migrated_relationship(conn, x, y, r)
+            stats["clean" if r["role_key"] else "custom"] += 1
+            if ambiguous:
+                stats["multi_tie_fallback"] += 1
+        for r in unmatched_y:
+            _apply_migrated_relationship(conn, y, x, r)
+            stats["clean" if r["role_key"] else "custom"] += 1
+            if ambiguous:
+                stats["multi_tie_fallback"] += 1
+
+    logger.info(
+        "Migrated relationships to reciprocal schema: "
+        f"{stats['clean']} clean role matches, {stats['custom']} custom roles, "
+        f"{stats['bidirectional_merged']} bidirectional pairs merged cleanly, "
+        f"{stats['multi_tie_fallback']} ties involved ambiguous multi-directional legacy data "
+        "(resolved by best-effort category matching — worth spot-checking), "
+        f"{dropped_null} rows dropped (no target character was ever set)"
+    )
+
+
 def get_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
-    # These two must run BEFORE executescript below: schema.sql's indexes
-    # reference the `owner` column, which a pre-auth database's `fields`/
-    # `characters` tables won't have yet — CREATE INDEX would crash against
-    # a table still missing that column.
+    # These must run BEFORE executescript below: schema.sql's indexes and
+    # constraints reference columns a pre-migration database's `fields`/
+    # `characters`/`relationships` tables won't have yet — CREATE
+    # INDEX/the table's own CHECK would crash against a table still
+    # missing those columns.
     _migrate_fields_to_owner(conn)
     _migrate_table(conn, "characters", CHARACTERS_COLUMNS)
+    _migrate_relationships_reciprocal(conn)
     conn.executescript(Path("schema.sql").read_text())
     _backfill_character_owner(conn)
     _migrate_table(conn, "character_images", CHARACTER_IMAGES_COLUMNS)
-    _migrate_table(conn, "relationships", RELATIONSHIPS_COLUMNS)
     return conn
 
 
@@ -259,15 +572,20 @@ class FieldUpdate(BaseModel):
 
 
 class RelationshipIn(BaseModel):
-    related_id: Optional[int] = None
-    label: Optional[str] = ""
-    type: Optional[str] = ""
+    from_id: int
+    to_id: int
+    role: str  # catalog key, or "custom"
+    custom_label: Optional[str] = None
+    custom_inverse_label: Optional[str] = None
+    category: Optional[str] = None  # only meaningful when role == "custom"
 
 
 class RelationshipUpdate(BaseModel):
-    related_id: Optional[int] = None
-    label: Optional[str] = None
-    type: Optional[str] = None
+    from_id: int
+    role: str
+    custom_label: Optional[str] = None
+    custom_inverse_label: Optional[str] = None
+    category: Optional[str] = None
 
 
 class RestoreIn(BaseModel):
@@ -342,16 +660,26 @@ def _primary_image_public_id(conn: sqlite3.Connection, character_id: int) -> Opt
 
 
 def _character_relationships(conn: sqlite3.Connection, character_id: int) -> list:
+    """Resolves each shared relationship record to character_id's own
+    perspective: if it's char_a, show (char_b, role_a_to_b); if char_b,
+    show (char_a, role_b_to_a) — see the schema.sql comment on
+    `relationships` for the role_a_to_b/role_b_to_a definitions."""
     rows = conn.execute(
-        "SELECT r.id AS id, r.related_id AS related_id, r.label AS label, r.type AS type, c.name AS related_name "
-        "FROM relationships r LEFT JOIN characters c ON c.id = r.related_id "
-        "WHERE r.character_id = ? ORDER BY r.sort_order, r.id",
-        (character_id,),
+        "SELECT r.id AS id, "
+        "CASE WHEN r.char_a_id = ? THEN r.char_b_id ELSE r.char_a_id END AS related_id, "
+        "CASE WHEN r.char_a_id = ? THEN r.role_a_to_b ELSE r.role_b_to_a END AS role_key, "
+        "CASE WHEN r.char_a_id = ? THEN r.custom_label_a_to_b ELSE r.custom_label_b_to_a END AS custom_label, "
+        "r.category AS category, c.name AS related_name "
+        "FROM relationships r "
+        "JOIN characters c ON c.id = (CASE WHEN r.char_a_id = ? THEN r.char_b_id ELSE r.char_a_id END) "
+        "WHERE r.char_a_id = ? OR r.char_b_id = ? ORDER BY r.id",
+        (character_id, character_id, character_id, character_id, character_id, character_id),
     ).fetchall()
     return [
         {
             "id": r["id"], "related_id": r["related_id"], "related_name": r["related_name"],
-            "label": r["label"], "type": r["type"],
+            "role_key": r["role_key"], "role_label": relationship_role_label(r["role_key"], r["custom_label"]),
+            "category": r["category"],
         }
         for r in rows
     ]
@@ -789,7 +1117,8 @@ def set_primary_image(character_id: int, image_id: int, owner: str = Depends(get
 
 
 # ---------------------------------------------------------------------------
-# Relationships (structured character-to-character links)
+# Relationships — reciprocal, catalog-based (see schema.sql's comment on
+# `relationships` for the char_a/char_b + role_a_to_b/role_b_to_a model).
 # ---------------------------------------------------------------------------
 
 def _check_same_owner_character(conn: sqlite3.Connection, character_id: Optional[int], owner: str):
@@ -799,91 +1128,183 @@ def _check_same_owner_character(conn: sqlite3.Connection, character_id: Optional
         "SELECT id FROM characters WHERE id = ? AND owner = ?", (character_id, owner)
     ).fetchone()
     if not row:
-        raise HTTPException(status_code=400, detail="related_id must be one of your own characters")
+        raise HTTPException(status_code=400, detail="Must be one of your own characters")
 
 
-@app.post("/characters/{character_id}/relationships", status_code=201)
-def create_relationship(character_id: int, body: RelationshipIn, owner: str = Depends(get_current_owner)):
-    conn = get_conn()
-    try:
-        char_row = conn.execute(
-            "SELECT id FROM characters WHERE id = ? AND owner = ?", (character_id, owner)
-        ).fetchone()
-        if not char_row:
-            raise HTTPException(status_code=404, detail="Character not found")
-        _check_same_owner_character(conn, body.related_id, owner)
-        max_sort = conn.execute(
-            "SELECT COALESCE(MAX(sort_order), -1) FROM relationships WHERE character_id = ?",
-            (character_id,),
-        ).fetchone()[0]
-        cur = conn.execute(
-            "INSERT INTO relationships (character_id, related_id, label, type, sort_order) VALUES (?, ?, ?, ?, ?)",
-            (character_id, body.related_id, (body.label or "").strip(), (body.type or "").strip(), max_sort + 1),
+def _resolve_relationship_sides(
+    from_id: int,
+    to_id: int,
+    role_key: str,
+    custom_label: Optional[str] = None,
+    custom_inverse_label: Optional[str] = None,
+    category_override: Optional[str] = None,
+) -> dict:
+    """Canonicalizes the pair and derives both sides' roles from a single
+    (from_id, to_id, role) input — the write-path algorithm shared by
+    create and edit. Custom roles are keyed as "custom:<slug-of-label>",
+    not a bare "custom" sentinel — two different custom ties between the
+    same pair need distinct keys, or the second one collides with the
+    first under the UNIQUE(char_a,char_b,role_a_to_b) constraint."""
+    if from_id == to_id:
+        raise HTTPException(status_code=400, detail="A character can't have a relationship with themselves")
+
+    if role_key == "custom":
+        own_label = (custom_label or "").strip() or "Related"
+        own_key = f"custom:{slugify(own_label)}"
+        other_label = (custom_inverse_label or "").strip() or own_label
+        other_key = f"custom:{slugify(other_label)}"
+        category = (category_override or "Other").strip() or "Other"
+    else:
+        if role_key not in RELATIONSHIP_ROLES:
+            raise HTTPException(status_code=400, detail=f"Unknown relationship role {role_key!r}")
+        own_key, own_label = role_key, None
+        other_key, other_label = RELATIONSHIP_ROLES[role_key]["inverse"], None
+        category = RELATIONSHIP_ROLES[role_key]["category"]
+
+    char_a, char_b = (from_id, to_id) if from_id < to_id else (to_id, from_id)
+    if from_id == char_a:
+        role_a_to_b, role_b_to_a = own_key, other_key
+        custom_label_a_to_b, custom_label_b_to_a = own_label, other_label
+    else:
+        role_b_to_a, role_a_to_b = own_key, other_key
+        custom_label_b_to_a, custom_label_a_to_b = own_label, other_label
+
+    return {
+        "char_a": char_a, "char_b": char_b,
+        "role_a_to_b": role_a_to_b, "role_b_to_a": role_b_to_a, "category": category,
+        "custom_label_a_to_b": custom_label_a_to_b, "custom_label_b_to_a": custom_label_b_to_a,
+    }
+
+
+def _upsert_relationship(
+    conn: sqlite3.Connection,
+    from_id: int,
+    to_id: int,
+    role_key: str,
+    custom_label: Optional[str] = None,
+    custom_inverse_label: Optional[str] = None,
+    category_override: Optional[str] = None,
+) -> int:
+    """The reciprocity engine for *creating* ties — reused by POST
+    /relationships, the relationships migration, and restore_data().
+    Dedupes on (char_a, char_b, computed role_a_to_b): a second call
+    describing the same tie edits the existing record instead of
+    duplicating it. NOT used for PUT-by-id edits (see update_relationship)
+    — dedupe-by-computed-key is wrong there, since changing an existing
+    tie's role changes the dedup key itself and would silently create a
+    second row instead of updating the one being edited."""
+    sides = _resolve_relationship_sides(from_id, to_id, role_key, custom_label, custom_inverse_label, category_override)
+    existing = conn.execute(
+        "SELECT id FROM relationships WHERE char_a_id = ? AND char_b_id = ? AND role_a_to_b = ?",
+        (sides["char_a"], sides["char_b"], sides["role_a_to_b"]),
+    ).fetchone()
+    now = _now()
+    if existing:
+        conn.execute(
+            "UPDATE relationships SET role_b_to_a = ?, category = ?, "
+            "custom_label_a_to_b = ?, custom_label_b_to_a = ?, updated_at = ? WHERE id = ?",
+            (sides["role_b_to_a"], sides["category"], sides["custom_label_a_to_b"], sides["custom_label_b_to_a"], now, existing["id"]),
         )
         conn.commit()
-        rel = conn.execute(
-            "SELECT r.id AS id, r.related_id AS related_id, r.label AS label, r.type AS type, c.name AS related_name "
-            "FROM relationships r LEFT JOIN characters c ON c.id = r.related_id WHERE r.id = ?",
-            (cur.lastrowid,),
-        ).fetchone()
+        return existing["id"]
+    cur = conn.execute(
+        "INSERT INTO relationships "
+        "(char_a_id, char_b_id, role_a_to_b, role_b_to_a, category, custom_label_a_to_b, custom_label_b_to_a, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (sides["char_a"], sides["char_b"], sides["role_a_to_b"], sides["role_b_to_a"], sides["category"],
+         sides["custom_label_a_to_b"], sides["custom_label_b_to_a"], now, now),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def _relationship_owner_row(conn: sqlite3.Connection, relationship_id: int, owner: str) -> Optional[sqlite3.Row]:
+    """A relationship row belongs to both char_a and char_b equally, so
+    ownership can be confirmed via either side (they're always the same
+    owner by construction, enforced at creation via
+    _check_same_owner_character on both from_id/to_id)."""
+    return conn.execute(
+        "SELECT r.* FROM relationships r "
+        "JOIN characters ca ON ca.id = r.char_a_id "
+        "WHERE r.id = ? AND ca.owner = ?",
+        (relationship_id, owner),
+    ).fetchone()
+
+
+@app.get("/relationship_roles")
+def list_relationship_roles():
+    return {
+        "categories": [{"name": name, "color": color} for name, color in CATEGORY_COLORS.items()],
+        "roles": [
+            {"key": key, "label": r["label"], "category": r["category"], "inverse": r["inverse"]}
+            for key, r in RELATIONSHIP_ROLES.items()
+        ],
+    }
+
+
+def _relationship_dict(conn: sqlite3.Connection, relationship_id: int, from_perspective: int) -> dict:
+    rows = _character_relationships(conn, from_perspective)
+    return next(r for r in rows if r["id"] == relationship_id)
+
+
+@app.post("/relationships", status_code=201)
+def create_relationship(body: RelationshipIn, owner: str = Depends(get_current_owner)):
+    conn = get_conn()
+    try:
+        _check_same_owner_character(conn, body.from_id, owner)
+        _check_same_owner_character(conn, body.to_id, owner)
+        rel_id = _upsert_relationship(
+            conn, body.from_id, body.to_id, body.role,
+            custom_label=body.custom_label, custom_inverse_label=body.custom_inverse_label,
+            category_override=body.category,
+        )
+        result = _relationship_dict(conn, rel_id, body.from_id)
     finally:
         conn.close()
     schedule_backup()
-    return dict(rel)
+    return result
 
 
-@app.put("/characters/{character_id}/relationships/{relationship_id}")
-def update_relationship(
-    character_id: int,
-    relationship_id: int,
-    body: RelationshipUpdate,
-    owner: str = Depends(get_current_owner),
-):
+@app.put("/relationships/{relationship_id}")
+def update_relationship(relationship_id: int, body: RelationshipUpdate, owner: str = Depends(get_current_owner)):
     conn = get_conn()
     try:
-        char_row = conn.execute(
-            "SELECT id FROM characters WHERE id = ? AND owner = ?", (character_id, owner)
-        ).fetchone()
-        if not char_row:
-            raise HTTPException(status_code=404, detail="Character not found")
-        row = conn.execute(
-            "SELECT * FROM relationships WHERE id = ? AND character_id = ?", (relationship_id, character_id)
-        ).fetchone()
+        row = _relationship_owner_row(conn, relationship_id, owner)
         if not row:
             raise HTTPException(status_code=404, detail="Relationship not found")
-        if body.related_id is not None:
-            _check_same_owner_character(conn, body.related_id, owner)
-        related_id = body.related_id if body.related_id is not None else row["related_id"]
-        label = body.label.strip() if body.label is not None else row["label"]
-        rel_type = body.type.strip() if body.type is not None else row["type"]
-        conn.execute(
-            "UPDATE relationships SET related_id = ?, label = ?, type = ? WHERE id = ?",
-            (related_id, label, rel_type, relationship_id),
+        if body.from_id not in (row["char_a_id"], row["char_b_id"]):
+            raise HTTPException(status_code=400, detail="from_id must be one of this relationship's two characters")
+        to_id = row["char_b_id"] if body.from_id == row["char_a_id"] else row["char_a_id"]
+        sides = _resolve_relationship_sides(
+            body.from_id, to_id, body.role,
+            custom_label=body.custom_label, custom_inverse_label=body.custom_inverse_label,
+            category_override=body.category,
         )
-        conn.commit()
-        rel = conn.execute(
-            "SELECT r.id AS id, r.related_id AS related_id, r.label AS label, r.type AS type, c.name AS related_name "
-            "FROM relationships r LEFT JOIN characters c ON c.id = r.related_id WHERE r.id = ?",
-            (relationship_id,),
-        ).fetchone()
+        try:
+            conn.execute(
+                "UPDATE relationships SET role_a_to_b = ?, role_b_to_a = ?, category = ?, "
+                "custom_label_a_to_b = ?, custom_label_b_to_a = ?, updated_at = ? WHERE id = ?",
+                (sides["role_a_to_b"], sides["role_b_to_a"], sides["category"],
+                 sides["custom_label_a_to_b"], sides["custom_label_b_to_a"], _now(), relationship_id),
+            )
+            conn.commit()
+        except sqlite3.IntegrityError:
+            raise HTTPException(
+                status_code=400,
+                detail="A relationship with that role already exists between these two characters — edit that one instead.",
+            )
+        result = _relationship_dict(conn, relationship_id, body.from_id)
     finally:
         conn.close()
     schedule_backup()
-    return dict(rel)
+    return result
 
 
-@app.delete("/characters/{character_id}/relationships/{relationship_id}", status_code=204)
-def delete_relationship(character_id: int, relationship_id: int, owner: str = Depends(get_current_owner)):
+@app.delete("/relationships/{relationship_id}", status_code=204)
+def delete_relationship(relationship_id: int, owner: str = Depends(get_current_owner)):
     conn = get_conn()
     try:
-        char_row = conn.execute(
-            "SELECT id FROM characters WHERE id = ? AND owner = ?", (character_id, owner)
-        ).fetchone()
-        if not char_row:
-            raise HTTPException(status_code=404, detail="Character not found")
-        row = conn.execute(
-            "SELECT id FROM relationships WHERE id = ? AND character_id = ?", (relationship_id, character_id)
-        ).fetchone()
+        row = _relationship_owner_row(conn, relationship_id, owner)
         if not row:
             raise HTTPException(status_code=404, detail="Relationship not found")
         conn.execute("DELETE FROM relationships WHERE id = ?", (relationship_id,))
@@ -895,21 +1316,35 @@ def delete_relationship(character_id: int, relationship_id: int, owner: str = De
 
 @app.get("/relationships")
 def list_relationships(owner: str = Depends(get_current_owner)):
-    """Every relationship edge across the owner's whole cast in one call —
-    used by the character map, which needs the full graph rather than one
-    character's relationships at a time."""
+    """Every relationship record across the owner's whole cast in one
+    call — used by the character map, which needs the full graph rather
+    than one character's relationships at a time."""
     conn = get_conn()
     try:
         rows = conn.execute(
-            "SELECT r.id AS id, r.character_id AS character_id, c1.name AS character_name, "
-            "r.related_id AS related_id, c2.name AS related_name, r.label AS label, r.type AS type "
+            "SELECT r.id AS id, r.char_a_id AS char_a_id, ca.name AS char_a_name, "
+            "r.char_b_id AS char_b_id, cb.name AS char_b_name, "
+            "r.role_a_to_b AS role_a_to_b, r.role_b_to_a AS role_b_to_a, "
+            "r.custom_label_a_to_b AS custom_label_a_to_b, r.custom_label_b_to_a AS custom_label_b_to_a, "
+            "r.category AS category "
             "FROM relationships r "
-            "JOIN characters c1 ON c1.id = r.character_id "
-            "LEFT JOIN characters c2 ON c2.id = r.related_id "
-            "WHERE c1.owner = ?",
+            "JOIN characters ca ON ca.id = r.char_a_id "
+            "JOIN characters cb ON cb.id = r.char_b_id "
+            "WHERE ca.owner = ?",
             (owner,),
         ).fetchall()
-        return [dict(r) for r in rows]
+        return [
+            {
+                "id": r["id"],
+                "char_a_id": r["char_a_id"], "char_a_name": r["char_a_name"],
+                "char_b_id": r["char_b_id"], "char_b_name": r["char_b_name"],
+                "role_a_to_b": r["role_a_to_b"], "role_b_to_a": r["role_b_to_a"],
+                "role_a_to_b_label": relationship_role_label(r["role_a_to_b"], r["custom_label_a_to_b"]),
+                "role_b_to_a_label": relationship_role_label(r["role_b_to_a"], r["custom_label_b_to_a"]),
+                "category": r["category"],
+            }
+            for r in rows
+        ]
     finally:
         conn.close()
 
@@ -1116,14 +1551,23 @@ async def restore_data(body: RestoreIn):
                     (character_id, img.get("url", ""), img["public_id"], 1 if img.get("is_primary") else 0, i),
                 )
 
+        # Both characters' exports describe the same shared relationship
+        # record, so _upsert_relationship naturally dedupes processing it
+        # from each side rather than creating two rows.
         for c in export.get("characters", []):
             new_character_id = old_to_new_char_id.get(c["id"])
             for rel in c.get("relationships") or []:
                 new_related_id = old_to_new_char_id.get(rel.get("related_id"))
-                conn.execute(
-                    "INSERT INTO relationships (character_id, related_id, label) VALUES (?, ?, ?)",
-                    (new_character_id, new_related_id, rel.get("label", "")),
-                )
+                if new_character_id is None or new_related_id is None:
+                    continue
+                role_key = rel.get("role_key") or ""
+                if role_key.startswith("custom:"):
+                    _upsert_relationship(
+                        conn, new_character_id, new_related_id, "custom",
+                        custom_label=rel.get("role_label"), category_override=rel.get("category"),
+                    )
+                elif role_key:
+                    _upsert_relationship(conn, new_character_id, new_related_id, role_key)
 
         conn.commit()
         # no-op per owner if fields already restored, safety net if export was empty

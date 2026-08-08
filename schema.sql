@@ -99,23 +99,34 @@ CREATE INDEX IF NOT EXISTS idx_character_tags_character ON character_tags(charac
 CREATE INDEX IF NOT EXISTS idx_character_tags_tag ON character_tags(tag);
 
 -- ============================================================
--- RELATIONSHIPS — structured character-to-character links (e.g.
--- "Rival / owes a debt"), a deliberate departure from BRIEF.md's
--- plain textarea field (see HANDOFF.md). Directional: character_id
--- is the character whose detail view the row appears on,
--- related_id is who it points at. related_id is nullable so a
--- freshly-added row can exist before a target is chosen. Both
--- FKs cascade independently, so deleting either character in the
--- pair cleans this row up.
+-- RELATIONSHIPS — one undirected record per pair-and-tie, shared by both
+-- characters (a deliberate departure from the original per-character
+-- directional design — see HANDOFF.md). char_a_id is always the smaller
+-- id (CHECK enforces this); role_a_to_b is "the role B holds toward A"
+-- ("B is A's ___"), role_b_to_a is "the role A holds toward B". Roles are
+-- catalog keys (see RELATIONSHIP_ROLES in app.py) or "custom:<slug>" for
+-- author-defined ties, with the human-readable text in custom_label_*.
+-- category drives map edge color. UNIQUE(char_a_id, char_b_id,
+-- role_a_to_b) means the same pair can hold several distinct ties (e.g.
+-- Sibling AND Rival) but not the same role twice — and since custom ties
+-- key off a slug of their own label rather than a bare "custom" sentinel,
+-- two different custom ties between the same pair don't collide either.
+-- Both FKs cascade, so deleting either character in the pair removes it.
 -- ============================================================
 CREATE TABLE IF NOT EXISTS relationships (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    character_id  INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
-    related_id    INTEGER REFERENCES characters(id) ON DELETE CASCADE,
-    label         TEXT NOT NULL DEFAULT '',
-    type          TEXT NOT NULL DEFAULT '',  -- category for map coloring, e.g. "Family"/"Rival" — free text, but UI offers a preset list
-    sort_order    INTEGER NOT NULL DEFAULT 0
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    char_a_id            INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+    char_b_id            INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+    role_a_to_b          TEXT NOT NULL,
+    role_b_to_a          TEXT NOT NULL,
+    category             TEXT NOT NULL,
+    custom_label_a_to_b  TEXT,
+    custom_label_b_to_a  TEXT,
+    created_at           TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at           TEXT DEFAULT CURRENT_TIMESTAMP,
+    CHECK(char_a_id < char_b_id),
+    UNIQUE(char_a_id, char_b_id, role_a_to_b)
 );
 
-CREATE INDEX IF NOT EXISTS idx_relationships_character ON relationships(character_id);
-CREATE INDEX IF NOT EXISTS idx_relationships_related ON relationships(related_id);
+CREATE INDEX IF NOT EXISTS idx_relationships_char_a ON relationships(char_a_id);
+CREATE INDEX IF NOT EXISTS idx_relationships_char_b ON relationships(char_b_id);

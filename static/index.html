@@ -158,8 +158,11 @@ main { padding: 0 20px 70px; }
 .rel-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 9px; align-items: center; }
 .rel-row select { flex: 1 1 150px; padding: 9px 10px; background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; font-size: 13px; }
 .rel-row input { flex: 2 1 180px; padding: 9px 12px; background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; font-size: 13px; }
-.rel-row .rel-type { flex: 1 1 120px; padding: 9px 10px; background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; font-size: 13px; }
+.rel-row .rel-role { flex: 1 1 170px; }
 .rel-row .rel-remove { border: 1px solid var(--line); background: var(--panel); width: 34px; height: 34px; border-radius: 8px; cursor: pointer; color: var(--muted); flex: none; }
+.rel-custom-wrap { flex: 1 1 100%; }
+.rel-custom-fields { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 2px; }
+.rel-custom-fields input, .rel-custom-fields select { flex: 1 1 140px; font-size: 12.5px; }
 .add-rel-btn { border: 1px dashed var(--line); background: none; padding: 8px 14px; border-radius: 8px; cursor: pointer; font-size: 13px; color: var(--muted); margin-top: 4px; }
 .detail-actions { display: flex; gap: 10px; flex-wrap: wrap; }
 .detail-hint { font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: var(--muted); margin: 12px 0 0; line-height: 1.5; }
@@ -251,23 +254,9 @@ const THEMES = {
 };
 const TYPE_LABELS = { text: 'Short text', textarea: 'Paragraph', number: 'Number', select: 'Select', date: 'Date', color: 'Colour' };
 const SECTION_ORDER = ['Identity', 'Description', 'Notes', 'Custom'];
-const PRESET_RELATIONSHIP_TYPES = ['Family', 'Friend', 'Romantic', 'Rival', 'Enemy', 'Ally', 'Mentor', 'Colleague'];
-
-// Deterministic — same type string always gets the same color within a
-// theme, and it's automatically theme-consistent since it draws from the
-// same swatch array the colour-field popover uses. Untyped relationships
-// get var(--muted) instead of a hashed color so they read as genuinely
-// uncategorized rather than colliding with a real type's color.
-function colorForType(type) {
-  if (!type) return 'var(--muted)';
-  const swatches = (THEMES[STATE.theme] && THEMES[STATE.theme].swatches) || ['var(--accent)'];
-  let hash = 0;
-  for (let i = 0; i < type.length; i++) hash = (hash * 31 + type.charCodeAt(i)) >>> 0;
-  return swatches[hash % swatches.length];
-}
 
 let STATE = {
-  fields: [], characters: [], status: null,
+  fields: [], characters: [], status: null, relationshipRoles: null,
   theme: localStorage.getItem('dramatis.theme') || 'dark',
   view: 'grid', selectedId: null, selectedDetail: null,
   search: '', activeTag: null,
@@ -280,6 +269,15 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 function isValidColor(v) { return typeof v === 'string' && /^#[0-9a-fA-F]{3,8}$/.test(v.trim()); }
+
+// Fixed, theme-independent — same source of truth as the backend
+// (GET /relationship_roles), not derived from the active theme's swatch
+// array. The author learns "red = Antagonistic" once and it stays true
+// no matter which of the 5 UI themes is active.
+function colorForCategory(category) {
+  const cat = STATE.relationshipRoles && STATE.relationshipRoles.categories.find(c => c.name === category);
+  return cat ? cat.color : 'var(--muted)';
+}
 function setActiveSwatch(container, color) {
   if (!container) return;
   const c = (color || '').toLowerCase();
@@ -332,10 +330,9 @@ function applyTheme(id) {
   // Colour-field swatch options are theme-specific — refresh them in place
   // if a character's detail view is already open when the theme changes.
   if (STATE.view === 'detail' && STATE.selectedDetail) redrawFieldSections();
-  // Map edge/legend colors are hashed from the theme's swatch array (not
-  // CSS vars), so they need an explicit recolor — node fills/strokes use
-  // var(--accent)/var(--panel) and pick up the new theme automatically.
-  if (STATE.view === 'map') recolorMap();
+  // Map edge/legend colors are fixed per category (not theme-derived), so
+  // no recolor needed here — node fills/strokes use var(--accent)/
+  // var(--panel) and pick up the new theme automatically via CSS.
 }
 
 // ---------------------------------------------------------------- header (built once, updated in place)
@@ -402,7 +399,10 @@ window.addEventListener('DOMContentLoaded', async () => {
   buildHeaderOnce();
   updateUserBadge();
   try {
-    STATE.fields = await api('GET', '/fields');
+    [STATE.fields, STATE.relationshipRoles] = await Promise.all([
+      api('GET', '/fields'),
+      api('GET', '/relationship_roles'),
+    ]);
   } catch (e) {
     document.getElementById('main-content').innerHTML = `<div class="empty-state"><div class="title">Can't reach the server</div><p>${escapeHtml(e.message)}</p></div>`;
     return;
@@ -656,6 +656,7 @@ function renderDetailView() {
             <h3>Relationships</h3>
             <div id="relationships-list"></div>
             <button class="add-rel-btn" id="add-rel-btn">+ Add relationship</button>
+            <p class="detail-hint">Relationships are mirrored automatically on the other character.</p>
           </div>
           <div class="detail-actions">
             <button class="btn-line" id="add-field-btn">+ Add a custom field</button>
@@ -949,78 +950,137 @@ function wireColorControl(id, key) {
   });
 }
 
-// ---- relationships ----
+// ---- relationships (reciprocal — see GET /relationship_roles for the catalog) ----
 
-function relTypeSelectHTML(currentType) {
-  const isKnownOrEmpty = !currentType || PRESET_RELATIONSHIP_TYPES.includes(currentType);
-  const customOpt = !isKnownOrEmpty
-    ? `<option value="${escapeHtml(currentType)}" selected>${escapeHtml(currentType)}</option>` : '';
-  const presetOpts = PRESET_RELATIONSHIP_TYPES.map(t =>
-    `<option value="${escapeHtml(t)}" ${t === currentType ? 'selected' : ''}>${escapeHtml(t)}</option>`
-  ).join('');
-  return `<select class="rel-type" data-role="type">
-    <option value="">— type —</option>${customOpt}${presetOpts}<option value="__custom__">Custom…</option>
+function relRoleSelectHTML(currentRoleKey) {
+  const catalog = STATE.relationshipRoles || { categories: [], roles: [] };
+  const isCustom = !!(currentRoleKey && currentRoleKey.startsWith('custom:'));
+  const groups = catalog.categories.map(cat => {
+    const inCat = catalog.roles.filter(r => r.category === cat.name);
+    if (!inCat.length) return '';
+    return `<optgroup label="${escapeHtml(cat.name)}">${inCat.map(r =>
+      `<option value="${r.key}" ${r.key === currentRoleKey ? 'selected' : ''}>${escapeHtml(r.label)}</option>`
+    ).join('')}</optgroup>`;
+  }).join('');
+  return `<select class="rel-role" data-role="role">
+    <option value="">— role —</option>${groups}<option value="__custom__" ${isCustom ? 'selected' : ''}>Custom…</option>
   </select>`;
 }
 
-// Wires a type control in place — swapping select→text input for a custom
-// value is a client-side-only state change (nothing to save until the
-// input blurs), same conditional-reveal pattern the Add Field modal uses
-// for its select-type options textarea.
-function wireRelTypeControl(wrap, relId, currentType) {
-  const select = wrap.querySelector('select');
-  if (!select) return;
-  select.addEventListener('change', () => {
-    if (select.value !== '__custom__') {
-      updateRelationship(relId, { type: select.value });
-      return;
-    }
-    wrap.innerHTML = `<input class="rel-type" type="text" data-role="type-custom" placeholder="type…">`;
-    const input = wrap.querySelector('input');
-    input.focus();
-    input.addEventListener('blur', async () => {
-      const v = input.value.trim();
-      if (v) {
-        await updateRelationship(relId, { type: v });
-        redrawRelationships();
-      } else {
-        wrap.innerHTML = relTypeSelectHTML(currentType);
-        wireRelTypeControl(wrap, relId, currentType);
-      }
-    });
-    input.addEventListener('keydown', e => { if (e.key === 'Enter') input.blur(); });
-  });
+function relCustomFieldsHTML(roleLabel, category) {
+  const catalog = STATE.relationshipRoles || { categories: [] };
+  return `<div class="rel-custom-fields">
+    <input type="text" data-role="custom-label" placeholder="Role label, e.g. Blood-bound" value="${escapeHtml(roleLabel || '')}">
+    <input type="text" data-role="custom-inverse" placeholder="Inverse (optional — same as above if blank)">
+    <select data-role="custom-category">
+      ${catalog.categories.map(c => `<option value="${escapeHtml(c.name)}" ${c.name === (category || 'Other') ? 'selected' : ''}>${escapeHtml(c.name)}</option>`).join('')}
+    </select>
+  </div>`;
 }
 
+// Draft rows are client-side only — a relationship record needs both a
+// target character AND a role to exist at all under the reciprocal model
+// (no "half-formed" row like the old one-field-at-a-time design), so
+// "+ Add relationship" adds a scratch entry here and only POSTs once both
+// are filled in. Keyed by a stable per-detail-view counter, not array
+// index, so removing/committing one draft never shifts another's identity.
 function redrawRelationships() {
   const d = STATE.selectedDetail;
   const el = document.getElementById('relationships-list');
   const otherChars = STATE.characters.filter(c => c.id !== d.id);
-  el.innerHTML = (d.relationships || []).map(r => `
-    <div class="rel-row" data-id="${r.id}">
+  if (!d._drafts) d._drafts = [];
+
+  const rows = [
+    ...(d.relationships || []).map(r => ({ ...r, rowKey: `r-${r.id}` })),
+    ...d._drafts.map(dr => ({ ...dr, rowKey: `d-${dr._draftId}` })),
+  ];
+
+  el.innerHTML = rows.map(r => {
+    const isCustom = !!(r.role_key && r.role_key.startsWith('custom:'));
+    return `
+    <div class="rel-row" data-key="${r.rowKey}">
       <select data-role="target">
         <option value="">— choose character —</option>
         ${otherChars.map(c => `<option value="${c.id}" ${c.id === r.related_id ? 'selected' : ''}>${escapeHtml(c.name || 'Unnamed')}</option>`).join('')}
       </select>
-      <input data-role="label" value="${escapeHtml(r.label || '')}" placeholder="how are they connected?">
-      <span data-role="type-wrap">${relTypeSelectHTML(r.type || '')}</span>
+      ${relRoleSelectHTML(r.role_key)}
       <button class="rel-remove" data-role="remove">&times;</button>
-    </div>`).join('');
+      <div class="rel-custom-wrap" data-role="custom-wrap" style="${isCustom ? '' : 'display:none'}">${relCustomFieldsHTML(r.role_label, r.category)}</div>
+    </div>`;
+  }).join('');
 
   el.querySelectorAll('.rel-row').forEach(row => {
-    const relId = Number(row.dataset.id);
-    const r = (d.relationships || []).find(x => x.id === relId);
-    row.querySelector('[data-role=target]').addEventListener('change', e => updateRelationship(relId, { related_id: e.target.value ? Number(e.target.value) : null }));
-    row.querySelector('[data-role=label]').addEventListener('change', e => updateRelationship(relId, { label: e.target.value }));
-    wireRelTypeControl(row.querySelector('[data-role=type-wrap]'), relId, (r && r.type) || '');
-    row.querySelector('[data-role=remove]').addEventListener('click', () => removeRelationship(relId));
+    const [kind, idStr] = row.dataset.key.split('-');
+    const isDraft = kind === 'd';
+    const relId = isDraft ? null : Number(idStr);
+    const draftId = isDraft ? Number(idStr) : null;
+    const getDraft = () => d._drafts.find(x => x._draftId === draftId);
+
+    const targetSelect = row.querySelector('[data-role=target]');
+    const roleSelect = row.querySelector('[data-role=role]');
+    const customWrap = row.querySelector('[data-role=custom-wrap]');
+
+    function maybeCommitDraft() {
+      const draft = getDraft();
+      if (!draft || !draft.related_id || !draft.role_key || draft.role_key === '__pending_custom__') return;
+      commitDraftRelationship(draftId);
+    }
+
+    targetSelect.addEventListener('change', e => {
+      const val = e.target.value ? Number(e.target.value) : null;
+      if (isDraft) { getDraft().related_id = val; maybeCommitDraft(); }
+      else changeRelationshipTarget(relId, val);
+    });
+
+    roleSelect.addEventListener('change', () => {
+      if (roleSelect.value === '__custom__') {
+        customWrap.style.display = '';
+        customWrap.querySelector('[data-role=custom-label]').focus();
+        if (isDraft) getDraft().role_key = '__pending_custom__';
+        return;
+      }
+      customWrap.style.display = 'none';
+      if (isDraft) { const dr = getDraft(); dr.role_key = roleSelect.value; dr.customPayload = null; maybeCommitDraft(); }
+      else saveRelationshipRole(relId, roleSelect.value);
+    });
+
+    if (customWrap) {
+      const applyCustom = () => {
+        const label = customWrap.querySelector('[data-role=custom-label]').value.trim();
+        if (!label) return;
+        const inverse = customWrap.querySelector('[data-role=custom-inverse]').value.trim();
+        const category = customWrap.querySelector('[data-role=custom-category]').value;
+        const payload = { custom_label: label, custom_inverse_label: inverse || undefined, category };
+        if (isDraft) { const dr = getDraft(); dr.role_key = 'custom'; dr.customPayload = payload; maybeCommitDraft(); }
+        else saveRelationshipRole(relId, 'custom', payload);
+      };
+      customWrap.querySelectorAll('input, select').forEach(el2 => el2.addEventListener('change', applyCustom));
+    }
+
+    row.querySelector('[data-role=remove]').addEventListener('click', () => {
+      if (isDraft) { d._drafts = d._drafts.filter(x => x._draftId !== draftId); redrawRelationships(); }
+      else removeRelationship(relId);
+    });
   });
 }
 
-async function handleAddRelationship() {
+function handleAddRelationship() {
   const d = STATE.selectedDetail;
+  if (!d._drafts) d._drafts = [];
+  if (d._draftCounter === undefined) d._draftCounter = 0;
+  d._drafts.push({ _draftId: d._draftCounter++, related_id: null, role_key: null, role_label: '', category: 'Other', customPayload: null });
+  redrawRelationships();
+}
+
+async function commitDraftRelationship(draftId) {
+  const d = STATE.selectedDetail;
+  const draft = d._drafts.find(x => x._draftId === draftId);
+  if (!draft) return;
   try {
-    const rel = await api('POST', `/characters/${d.id}/relationships`, { related_id: null, label: '' });
+    const body = { from_id: d.id, to_id: draft.related_id, role: draft.role_key };
+    if (draft.role_key === 'custom' && draft.customPayload) Object.assign(body, draft.customPayload);
+    const rel = await api('POST', '/relationships', body);
+    d._drafts = d._drafts.filter(x => x._draftId !== draftId);
     d.relationships.push(rel);
     redrawRelationships();
   } catch (e) {
@@ -1028,21 +1088,49 @@ async function handleAddRelationship() {
   }
 }
 
-async function updateRelationship(relId, patch) {
+// The backend ties a record to a specific pair of characters — changing
+// the target means this row now describes a different pair entirely, so
+// it's a delete-and-recreate (keeping the same role) rather than a
+// simple field patch.
+async function changeRelationshipTarget(relId, newTargetId) {
+  const d = STATE.selectedDetail;
+  const existing = d.relationships.find(r => r.id === relId);
+  if (!existing || !newTargetId) { redrawRelationships(); return; }
+  try {
+    await api('DELETE', `/relationships/${relId}`);
+    const body = { from_id: d.id, to_id: newTargetId, role: existing.role_key };
+    if (existing.role_key && existing.role_key.startsWith('custom:')) {
+      body.role = 'custom';
+      body.custom_label = existing.role_label;
+      body.category = existing.category;
+    }
+    const rel = await api('POST', '/relationships', body);
+    d.relationships = d.relationships.filter(r => r.id !== relId);
+    d.relationships.push(rel);
+    redrawRelationships();
+  } catch (e) {
+    alert('Could not change target: ' + e.message);
+    redrawRelationships();
+  }
+}
+
+async function saveRelationshipRole(relId, role, extra) {
   const d = STATE.selectedDetail;
   try {
-    const rel = await api('PUT', `/characters/${d.id}/relationships/${relId}`, patch);
+    const body = Object.assign({ from_id: d.id, role }, extra || {});
+    const rel = await api('PUT', `/relationships/${relId}`, body);
     const idx = d.relationships.findIndex(r => r.id === relId);
     if (idx >= 0) d.relationships[idx] = rel;
   } catch (e) {
     alert('Could not save relationship: ' + e.message);
+    redrawRelationships();
   }
 }
 
 async function removeRelationship(relId) {
   const d = STATE.selectedDetail;
   try {
-    await api('DELETE', `/characters/${d.id}/relationships/${relId}`);
+    await api('DELETE', `/relationships/${relId}`);
     d.relationships = d.relationships.filter(r => r.id !== relId);
     redrawRelationships();
   } catch (e) {
@@ -1072,17 +1160,30 @@ const MAP = {
   dragNode: null, dragMoved: false, dragStartX: 0, dragStartY: 0,
 };
 
-function dedupeMapEdges(relationships) {
+// GET /relationships already returns one row per tie, canonically ordered
+// (char_a_id < char_b_id) — no directional-duplicate merging needed like
+// the old free-text model required. What's needed instead: grouping ties
+// that share a pair, so a pair holding more than one tie (e.g. Sibling
+// AND Rival) renders as offset parallel lines rather than overlapping.
+function buildMapEdges(relationships) {
   const byPair = new Map();
   relationships.forEach(r => {
-    if (!r.related_id) return;
-    const key = r.character_id < r.related_id ? `${r.character_id}:${r.related_id}` : `${r.related_id}:${r.character_id}`;
-    const labelText = [r.type, r.label].filter(Boolean).join(' — ') || '(unlabeled)';
-    const existing = byPair.get(key);
-    if (existing) existing.labels.push(labelText);
-    else byPair.set(key, { a: r.character_id, b: r.related_id, type: r.type || '', labels: [labelText] });
+    const key = `${r.char_a_id}:${r.char_b_id}`;
+    if (!byPair.has(key)) byPair.set(key, []);
+    byPair.get(key).push(r);
   });
-  return [...byPair.values()];
+  const edges = [];
+  byPair.forEach(rows => {
+    const n = rows.length;
+    rows.forEach((r, i) => {
+      edges.push({
+        a: r.char_a_id, b: r.char_b_id, category: r.category,
+        offset: i - (n - 1) / 2,
+        tooltip: `${r.char_b_name}: ${r.role_a_to_b_label} · ${r.char_a_name}: ${r.role_b_to_a_label}`,
+      });
+    });
+  });
+  return edges;
 }
 
 function renderMapView(characters, relationships) {
@@ -1100,8 +1201,8 @@ function renderMapView(characters, relationships) {
     };
   });
   const nodeById = new Map(nodes.map(n => [n.id, n]));
-  const edges = dedupeMapEdges(relationships).filter(e => nodeById.has(e.a) && nodeById.has(e.b));
-  const typesPresent = [...new Set(edges.map(e => e.type).filter(Boolean))].sort();
+  const edges = buildMapEdges(relationships).filter(e => nodeById.has(e.a) && nodeById.has(e.b));
+  const categoriesPresent = [...new Set(edges.map(e => e.category).filter(Boolean))];
 
   document.getElementById('main-content').innerHTML = characters.length === 0
     ? `<div class="empty-state"><div class="title">No characters yet</div><p>Create a character to see them appear on the map.</p></div>`
@@ -1127,17 +1228,19 @@ function renderMapView(characters, relationships) {
   MAP.nodeById = nodeById;
   MAP.svg = document.getElementById('map-svg');
 
-  drawMapLegend(typesPresent);
+  drawMapLegend(categoriesPresent);
   drawMapEdgesAndNodes();
   wireMapInteractions();
   runMapSimulation();
 }
 
-function drawMapLegend(types) {
+function drawMapLegend(categoriesPresent) {
   const el = document.getElementById('map-legend');
   if (!el) return;
-  el.innerHTML = types.map(t =>
-    `<div class="map-legend-row"><span class="map-legend-dot" style="background:${colorForType(t)}"></span>${escapeHtml(t)}</div>`
+  const ordered = (STATE.relationshipRoles ? STATE.relationshipRoles.categories : [])
+    .filter(c => categoriesPresent.includes(c.name));
+  el.innerHTML = ordered.map(c =>
+    `<div class="map-legend-row"><span class="map-legend-dot" style="background:${c.color}"></span>${escapeHtml(c.name)}</div>`
   ).join('');
 }
 
@@ -1151,9 +1254,9 @@ function drawMapEdgesAndNodes() {
   MAP.edges.forEach(e => {
     const line = document.createElementNS(svgNS, 'line');
     line.setAttribute('class', 'map-edge');
-    line.setAttribute('stroke', colorForType(e.type));
+    line.setAttribute('stroke', colorForCategory(e.category));
     const title = document.createElementNS(svgNS, 'title');
-    title.textContent = e.labels.join('; ');
+    title.textContent = e.tooltip;
     line.appendChild(title);
     edgesG.appendChild(line);
     e._el = line;
@@ -1185,12 +1288,25 @@ function drawMapEdgesAndNodes() {
   updateMapPositions();
 }
 
+const MAP_EDGE_OFFSET_PX = 6;
+
 function updateMapPositions() {
   MAP.edges.forEach(e => {
     const a = MAP.nodeById.get(e.a), b = MAP.nodeById.get(e.b);
     if (!a || !b || !e._el) return;
-    e._el.setAttribute('x1', a.x); e._el.setAttribute('y1', a.y);
-    e._el.setAttribute('x2', b.x); e._el.setAttribute('y2', b.y);
+    // A pair holding more than one tie (e.g. Sibling + Rival) draws as
+    // parallel offset lines, not one line per tie stacked on top of the
+    // other — each edge shifts perpendicular to the a→b axis by its
+    // index among that pair's ties.
+    let ox = 0, oy = 0;
+    if (e.offset) {
+      const dx = b.x - a.x, dy = b.y - a.y;
+      const dist = Math.hypot(dx, dy) || 1;
+      ox = (-dy / dist) * e.offset * MAP_EDGE_OFFSET_PX;
+      oy = (dx / dist) * e.offset * MAP_EDGE_OFFSET_PX;
+    }
+    e._el.setAttribute('x1', a.x + ox); e._el.setAttribute('y1', a.y + oy);
+    e._el.setAttribute('x2', b.x + ox); e._el.setAttribute('y2', b.y + oy);
   });
   MAP.nodes.forEach(n => { if (n._el) n._el.setAttribute('transform', `translate(${n.x},${n.y})`); });
 }
@@ -1284,12 +1400,6 @@ function wireMapInteractions() {
       evt.preventDefault();
     });
   });
-}
-
-function recolorMap() {
-  if (!MAP.edges || !MAP.svg) return;
-  MAP.edges.forEach(e => { if (e._el) e._el.setAttribute('stroke', colorForType(e.type)); });
-  drawMapLegend([...new Set(MAP.edges.map(e => e.type).filter(Boolean))].sort());
 }
 
 // ---------------------------------------------------------------- modal: add field
