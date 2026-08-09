@@ -51,6 +51,7 @@ DB_PATH = os.environ.get("PROFILES_DB_PATH", "profiles.db")
 ALLOWED_OWNERS = [u.strip() for u in os.environ.get("DRAMATIS_USERS", "").split(",") if u.strip()]
 LEGACY_OWNER = os.environ.get("DRAMATIS_LEGACY_OWNER", ALLOWED_OWNERS[0] if ALLOWED_OWNERS else "")
 OWNER_COOKIE = "dramatis_owner"
+PROJECT_COOKIE = "dramatis_project"
 
 app = FastAPI(title="Dramatis")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -64,6 +65,12 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 # column" the moment a feature touching the new column runs.
 CHARACTERS_COLUMNS = {
     "owner": "TEXT NOT NULL DEFAULT ''",
+    # Nullable here (SQLite's ADD COLUMN can't retroactively enforce NOT
+    # NULL without a constant default) — _migrate_fields_to_projects()
+    # backfills every existing row's project_id right after this column
+    # is added. A fresh install's CREATE TABLE (schema.sql) enforces
+    # NOT NULL for real, since no ALTER TABLE is involved there.
+    "project_id": "INTEGER",
     "name": "TEXT DEFAULT ''",
     "created_at": "TEXT DEFAULT CURRENT_TIMESTAMP",
     "updated_at": "TEXT DEFAULT CURRENT_TIMESTAMP",
@@ -91,6 +98,16 @@ BUILTIN_FIELDS = [
     ("Backstory", "textarea", "Description", None),
     ("Goals / motivations", "textarea", "Description", None),
     ("Notes & other comments", "textarea", "Notes", None),
+]
+
+# Built-in project_meta keys seeded on project creation, per the locked
+# Projects spec (A1). (key, label) — value starts blank.
+BUILTIN_PROJECT_META = [
+    ("setting", "Setting / Location"),
+    ("form", "Form"),
+    ("viewpoint", "Viewpoint"),
+    ("logline", "Logline"),
+    ("notes", "Notes"),
 ]
 
 # The card-summary field keys returned inline by GET /characters, keyed by
@@ -235,18 +252,52 @@ def _migrate_table(conn: sqlite3.Connection, table_name: str, columns: dict):
     conn.commit()
 
 
-def _seed_builtin_fields(conn: sqlite3.Connection, owner: str):
-    count = conn.execute("SELECT COUNT(*) FROM fields WHERE owner = ?", (owner,)).fetchone()[0]
+def _seed_builtin_fields(conn: sqlite3.Connection, project_id: int):
+    count = conn.execute("SELECT COUNT(*) FROM fields WHERE project_id = ?", (project_id,)).fetchone()[0]
     if count > 0:
         return
     for i, (label, ftype, section, options) in enumerate(BUILTIN_FIELDS):
         conn.execute(
-            "INSERT INTO fields (owner, key, label, type, options, section, is_builtin, sort_order) "
+            "INSERT INTO fields (project_id, key, label, type, options, section, is_builtin, sort_order) "
             "VALUES (?, ?, ?, ?, ?, ?, 1, ?)",
-            (owner, slugify(label), label, ftype, json.dumps(options) if options else None, section, i),
+            (project_id, slugify(label), label, ftype, json.dumps(options) if options else None, section, i),
         )
     conn.commit()
-    logger.info(f"Seeded {len(BUILTIN_FIELDS)} built-in fields for owner={owner!r}")
+    logger.info(f"Seeded {len(BUILTIN_FIELDS)} built-in fields for project_id={project_id}")
+
+
+def _seed_builtin_project_meta(conn: sqlite3.Connection, project_id: int):
+    count = conn.execute("SELECT COUNT(*) FROM project_meta WHERE project_id = ?", (project_id,)).fetchone()[0]
+    if count > 0:
+        return
+    for i, (key, label) in enumerate(BUILTIN_PROJECT_META):
+        conn.execute(
+            "INSERT INTO project_meta (project_id, key, label, value, is_builtin, sort_order) "
+            "VALUES (?, ?, ?, '', 1, ?)",
+            (project_id, key, label, i),
+        )
+    conn.commit()
+    logger.info(f"Seeded {len(BUILTIN_PROJECT_META)} built-in project_meta keys for project_id={project_id}")
+
+
+def _create_project(conn: sqlite3.Connection, owner: str, title: str = "Untitled Project", seed_fields: bool = True) -> int:
+    """The one place a project gets created — migration, POST /projects,
+    and get_current_project's zero-projects fallback all go through this,
+    so builtin-seeding never drifts out of sync between call sites.
+    seed_fields=False is used only mid-migration, when `fields` hasn't
+    been rebuilt to its project-scoped shape yet (see
+    _migrate_fields_to_projects)."""
+    now = _now()
+    cur = conn.execute(
+        "INSERT INTO projects (owner, title, created_at, updated_at, last_opened_at) VALUES (?, ?, ?, ?, ?)",
+        (owner, title, now, now, now),
+    )
+    project_id = cur.lastrowid
+    conn.commit()
+    _seed_builtin_project_meta(conn, project_id)
+    if seed_fields:
+        _seed_builtin_fields(conn, project_id)
+    return project_id
 
 
 def _migrate_fields_to_owner(conn: sqlite3.Connection):
@@ -268,9 +319,16 @@ def _migrate_fields_to_owner(conn: sqlite3.Connection):
     are still switched off for the DROP TABLE fields step, since dropping a
     table while something still legitimately references it by name would
     otherwise cascade-delete every character's field values."""
+    # Also returns once `project_id` is present: `fields` later dropped
+    # `owner` entirely in favour of `project_id` (see
+    # _migrate_fields_to_projects). Without this second check, "owner" in
+    # existing" would be permanently False the moment that migration
+    # runs, and this function would silently re-fire on every subsequent
+    # get_conn() call, rebuilding `fields` back into this old owner-based
+    # shape and destroying the project migration.
     existing = {row[1] for row in conn.execute("PRAGMA table_info(fields)").fetchall()}
-    if not existing or "owner" in existing:
-        return  # table doesn't exist yet, or already migrated
+    if not existing or "owner" in existing or "project_id" in existing:
+        return  # table doesn't exist yet, already migrated, or migrated further to project_id
     conn.execute("PRAGMA foreign_keys = OFF")
     conn.execute(
         "CREATE TABLE fields_new ("
@@ -301,6 +359,123 @@ def _migrate_fields_to_owner(conn: sqlite3.Connection):
 def _backfill_character_owner(conn: sqlite3.Connection):
     conn.execute("UPDATE characters SET owner = ? WHERE owner = ''", (LEGACY_OWNER,))
     conn.commit()
+
+
+def _migrate_fields_to_projects(conn: sqlite3.Connection):
+    """One-time rebuild: `fields`/`characters` used to be owner-scoped;
+    now they sit inside `projects` (one project per book), and `fields`
+    drops `owner` for `project_id` (mirrors the owner-scoping rebuild
+    _migrate_fields_to_owner did earlier — same temp-table/drop/rename
+    technique, for the same reason: SQLite can't ALTER a UNIQUE
+    constraint). Guarded by the presence of `project_id` on `fields`, so
+    it only runs once. Must run before schema.sql's executescript, same
+    structural reason as always: schema.sql's fields/characters
+    definitions (UNIQUE(project_id, key), the project_id index/NOT NULL)
+    would crash against tables still in their pre-migration shape on disk.
+
+    `characters.project_id` is expected to already exist (nullable) —
+    added by the ADD-COLUMN _migrate_table() call earlier in get_conn()
+    — since this function only backfills its values, it doesn't add the
+    column itself."""
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(fields)").fetchall()}
+    if not existing or "project_id" in existing:
+        return  # table doesn't exist yet, or already migrated
+
+    # `projects`/`project_meta` are brand-new tables with no legacy shape
+    # to collide with — safe to create them here, ahead of schema.sql's
+    # own executescript, since this migration needs to populate them
+    # before that runs.
+    conn.executescript(
+        "CREATE TABLE IF NOT EXISTS projects ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "owner TEXT NOT NULL,"
+        "title TEXT NOT NULL DEFAULT 'Untitled Project',"
+        "created_at TEXT DEFAULT CURRENT_TIMESTAMP,"
+        "updated_at TEXT DEFAULT CURRENT_TIMESTAMP,"
+        "last_opened_at TEXT DEFAULT CURRENT_TIMESTAMP);"
+        "CREATE TABLE IF NOT EXISTS project_meta ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,"
+        "key TEXT NOT NULL,"
+        "label TEXT NOT NULL,"
+        "value TEXT NOT NULL DEFAULT '',"
+        "is_builtin INTEGER NOT NULL DEFAULT 0,"
+        "sort_order INTEGER NOT NULL DEFAULT 0,"
+        "UNIQUE(project_id, key));"
+    )
+
+    # Owners from actual data, not ALLOWED_OWNERS — avoids orphaning data
+    # if that env var ever changes. Guard against a stray owner = '' row
+    # (shouldn't exist post-_backfill_character_owner, but that function
+    # runs *after* this one in get_conn(), so be defensive here too).
+    owners = {
+        (row[0] or "").strip()
+        for row in conn.execute(
+            "SELECT DISTINCT owner FROM characters UNION SELECT DISTINCT owner FROM fields"
+        ).fetchall()
+    }
+    owners.discard("")
+    if not owners:
+        owners = {LEGACY_OWNER}
+
+    project_id_by_owner = {}
+    for owner in sorted(owners):
+        # seed_fields=False: `fields` is still in its pre-migration
+        # owner-scoped shape at this point in the function — the rebuild
+        # below is what gives it a project-scoped shape to seed into.
+        # project_meta has no such ordering issue (brand-new table), so
+        # _create_project's project_meta seeding runs immediately.
+        project_id_by_owner[owner] = _create_project(conn, owner, seed_fields=False)
+
+    conn.execute("PRAGMA foreign_keys = OFF")
+    conn.execute(
+        "CREATE TABLE fields_new ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,"
+        "key TEXT NOT NULL,"
+        "label TEXT NOT NULL,"
+        "type TEXT NOT NULL DEFAULT 'text',"
+        "options TEXT,"
+        "section TEXT NOT NULL DEFAULT 'Custom',"
+        "is_builtin INTEGER NOT NULL DEFAULT 0,"
+        "sort_order INTEGER NOT NULL DEFAULT 0,"
+        "created_at TEXT DEFAULT CURRENT_TIMESTAMP,"
+        "UNIQUE(project_id, key))"
+    )
+    old_fields = conn.execute("SELECT * FROM fields").fetchall()
+    for f in old_fields:
+        owner = (f["owner"] or "").strip() or LEGACY_OWNER
+        project_id = project_id_by_owner[owner]
+        conn.execute(
+            "INSERT INTO fields_new "
+            "(id, project_id, key, label, type, options, section, is_builtin, sort_order, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (f["id"], project_id, f["key"], f["label"], f["type"], f["options"],
+             f["section"], f["is_builtin"], f["sort_order"], f["created_at"]),
+        )
+    conn.execute("DROP TABLE fields")
+    conn.execute("ALTER TABLE fields_new RENAME TO fields")
+    conn.commit()
+    conn.execute("PRAGMA foreign_keys = ON")
+
+    for owner, project_id in project_id_by_owner.items():
+        conn.execute("UPDATE characters SET project_id = ? WHERE owner = ?", (project_id, owner))
+    conn.commit()
+
+    # Safety net: any project that ends up with zero fields (e.g. an
+    # owner who had characters but no fields left) gets builtins seeded
+    # explicitly now that `fields` is in its final project-scoped shape —
+    # mirrors the existing restore-safety-net pattern of re-seeding
+    # rather than assuming.
+    for project_id in project_id_by_owner.values():
+        count = conn.execute("SELECT COUNT(*) FROM fields WHERE project_id = ?", (project_id,)).fetchone()[0]
+        if count == 0:
+            _seed_builtin_fields(conn, project_id)
+
+    logger.info(
+        f"Migrated fields/characters to project-scoped schema; "
+        f"created {len(project_id_by_owner)} project(s) for owners {sorted(project_id_by_owner.keys())}"
+    )
 
 
 # Case-insensitive bare-word/phrase -> catalog role key, used only by the
@@ -518,6 +693,7 @@ def get_conn() -> sqlite3.Connection:
     _migrate_fields_to_owner(conn)
     _migrate_table(conn, "characters", CHARACTERS_COLUMNS)
     _migrate_relationships_reciprocal(conn)
+    _migrate_fields_to_projects(conn)
     conn.executescript(Path("schema.sql").read_text())
     _backfill_character_owner(conn)
     _migrate_table(conn, "character_images", CHARACTER_IMAGES_COLUMNS)
@@ -537,12 +713,78 @@ def get_current_owner(request: Request) -> str:
     return owner
 
 
+def get_current_project(request: Request, owner: str = Depends(get_current_owner)) -> int:
+    """Resolves which project a request should see, three cases:
+    - Cookie present and resolves to one of this owner's projects -> use it.
+    - Cookie present but doesn't resolve (wrong id, another owner's
+      project, tampering) -> hard 404. Not silently papered over — either
+      a real bug or a forged cookie, both worth surfacing.
+    - No cookie -> fall back to the most-recently-opened project (covers
+      cleared cookies / a new device), or transparently provision a first
+      project if this owner has none yet (mirrors the old login-time
+      auto-provisioning). This fallback deliberately doesn't set the
+      cookie itself — the frontend boot sequence calls
+      POST /projects/{id}/activate explicitly; this is just a safety net
+      for requests that arrive before that's happened."""
+    conn = get_conn()
+    try:
+        raw = request.cookies.get(PROJECT_COOKIE)
+        if raw:
+            try:
+                project_id = int(raw)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid project")
+            row = conn.execute(
+                "SELECT id FROM projects WHERE id = ? AND owner = ?", (project_id, owner)
+            ).fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Project not found")
+            return project_id
+        row = conn.execute(
+            "SELECT id FROM projects WHERE owner = ? ORDER BY last_opened_at DESC LIMIT 1", (owner,)
+        ).fetchone()
+        if row:
+            return row["id"]
+        return _create_project(conn, owner)
+    finally:
+        conn.close()
+
+
+def _get_owned_character(conn: sqlite3.Connection, character_id: int, owner: str, project_id: int) -> Optional[sqlite3.Row]:
+    """Centralized character-ownership check — every route that reads or
+    writes a specific character by id goes through this, so project
+    scoping can't silently drift out of sync at one call site while the
+    others stay correct (see the Projects plan's stress-test findings)."""
+    return conn.execute(
+        "SELECT * FROM characters WHERE id = ? AND owner = ? AND project_id = ?",
+        (character_id, owner, project_id),
+    ).fetchone()
+
+
 # ---------------------------------------------------------------------------
 # Pydantic request bodies
 # ---------------------------------------------------------------------------
 
 class LoginIn(BaseModel):
     username: str
+
+
+class ProjectIn(BaseModel):
+    title: Optional[str] = "Untitled Project"
+
+
+class ProjectUpdate(BaseModel):
+    title: Optional[str] = None
+
+
+class ProjectMetaIn(BaseModel):
+    label: str
+    value: Optional[str] = ""
+
+
+class ProjectMetaUpdate(BaseModel):
+    label: Optional[str] = None
+    value: Optional[str] = None
 
 
 class CharacterIn(BaseModel):
@@ -599,7 +841,7 @@ class RestoreIn(BaseModel):
 def _field_row_to_dict(row: sqlite3.Row) -> dict:
     return {
         "id": row["id"],
-        "owner": row["owner"],
+        "project_id": row["project_id"],
         "key": row["key"],
         "label": row["label"],
         "type": row["type"],
@@ -610,11 +852,77 @@ def _field_row_to_dict(row: sqlite3.Row) -> dict:
     }
 
 
-def _all_fields(conn: sqlite3.Connection, owner: str) -> list:
+def _all_fields(conn: sqlite3.Connection, project_id: int) -> list:
     rows = conn.execute(
-        "SELECT * FROM fields WHERE owner = ? ORDER BY sort_order, id", (owner,)
+        "SELECT * FROM fields WHERE project_id = ? ORDER BY sort_order, id", (project_id,)
     ).fetchall()
     return [_field_row_to_dict(r) for r in rows]
+
+
+def _create_field(
+    conn: sqlite3.Connection, project_id: int, label: str, ftype: str = "text",
+    options: Optional[list] = None, section: str = "Custom", is_builtin: bool = False,
+) -> dict:
+    """Shared by POST /fields and the document-import commit path (Part
+    B) — both need "make this label a standard field in this project,
+    de-duping the key" and nothing more."""
+    base_key = slugify(label)
+    key = base_key
+    existing_keys = {
+        r["key"] for r in conn.execute("SELECT key FROM fields WHERE project_id = ?", (project_id,)).fetchall()
+    }
+    suffix = 2
+    while key in existing_keys:
+        key = f"{base_key}_{suffix}"
+        suffix += 1
+    max_sort = conn.execute(
+        "SELECT COALESCE(MAX(sort_order), -1) FROM fields WHERE project_id = ?", (project_id,)
+    ).fetchone()[0]
+    cur = conn.execute(
+        "INSERT INTO fields (project_id, key, label, type, options, section, is_builtin, sort_order) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            project_id, key, label.strip(), ftype,
+            json.dumps(options) if options else None,
+            (section or "Custom").strip() or "Custom",
+            1 if is_builtin else 0,
+            max_sort + 1,
+        ),
+    )
+    conn.commit()
+    return _field_row_to_dict(conn.execute("SELECT * FROM fields WHERE id = ?", (cur.lastrowid,)).fetchone())
+
+
+def _project_row_to_dict(row: sqlite3.Row, char_count: Optional[int] = None) -> dict:
+    d = {
+        "id": row["id"],
+        "owner": row["owner"],
+        "title": row["title"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+        "last_opened_at": row["last_opened_at"],
+    }
+    if char_count is not None:
+        d["character_count"] = char_count
+    return d
+
+
+def _project_meta_row_to_dict(row: sqlite3.Row) -> dict:
+    return {
+        "id": row["id"],
+        "key": row["key"],
+        "label": row["label"],
+        "value": row["value"],
+        "is_builtin": bool(row["is_builtin"]),
+        "sort_order": row["sort_order"],
+    }
+
+
+def _project_meta_list(conn: sqlite3.Connection, project_id: int) -> list:
+    rows = conn.execute(
+        "SELECT * FROM project_meta WHERE project_id = ? ORDER BY sort_order, id", (project_id,)
+    ).fetchall()
+    return [_project_meta_row_to_dict(r) for r in rows]
 
 
 def _character_values(conn: sqlite3.Connection, character_id: int) -> dict:
@@ -715,26 +1023,35 @@ def _character_card(conn: sqlite3.Connection, row: sqlite3.Row, values_by_char: 
     }
 
 
-def build_export(conn: sqlite3.Connection, owner: Optional[str] = None) -> dict:
-    """owner=None dumps every owner's data (used for the whole-household Drive
-    backup); a given owner scopes both fields and characters to just them
-    (used by the user-facing "download snapshot" export)."""
-    if owner is not None:
-        fields = _all_fields(conn, owner)
-        char_rows = conn.execute(
-            "SELECT * FROM characters WHERE owner = ? ORDER BY id", (owner,)
-        ).fetchall()
+def build_export(conn: sqlite3.Connection, owner: Optional[str] = None, project_id: Optional[int] = None) -> dict:
+    """project_id scopes to a single project (used by a future per-project
+    export); owner (with project_id=None) scopes to all of that owner's
+    projects (used by the user-facing "download snapshot" export);
+    neither dumps every owner's every project (used for the
+    whole-household Drive backup). Output shape: {"exported_at", "projects":
+    [{"id", "owner", "title", "meta", "fields", "characters"}, ...]}."""
+    if project_id is not None:
+        project_rows = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchall()
+    elif owner is not None:
+        project_rows = conn.execute("SELECT * FROM projects WHERE owner = ? ORDER BY id", (owner,)).fetchall()
     else:
-        fields = [
-            _field_row_to_dict(r)
-            for r in conn.execute("SELECT * FROM fields ORDER BY owner, sort_order, id").fetchall()
-        ]
-        char_rows = conn.execute("SELECT * FROM characters ORDER BY id").fetchall()
-    characters = [_character_detail(conn, r["id"]) for r in char_rows]
+        project_rows = conn.execute("SELECT * FROM projects ORDER BY owner, id").fetchall()
+
+    projects = []
+    for p in project_rows:
+        pid = p["id"]
+        char_rows = conn.execute("SELECT * FROM characters WHERE project_id = ? ORDER BY id", (pid,)).fetchall()
+        projects.append({
+            "id": pid,
+            "owner": p["owner"],
+            "title": p["title"],
+            "meta": _project_meta_list(conn, pid),
+            "fields": _all_fields(conn, pid),
+            "characters": [_character_detail(conn, r["id"]) for r in char_rows],
+        })
     return {
         "exported_at": _now(),
-        "fields": fields,
-        "characters": characters,
+        "projects": projects,
     }
 
 
@@ -831,11 +1148,12 @@ def me(owner: str = Depends(get_current_owner)):
 def login(body: LoginIn, response: Response):
     if body.username not in ALLOWED_OWNERS:
         raise HTTPException(status_code=400, detail="Unknown user")
-    conn = get_conn()
-    try:
-        _seed_builtin_fields(conn, body.username)
-    finally:
-        conn.close()
+    # No DB writes here anymore — builtin-field/project_meta seeding now
+    # happens at project-creation time (see _create_project), not
+    # login-time, since fields are project-scoped rather than
+    # owner-scoped. get_current_project's zero-projects fallback
+    # transparently provisions a first project on this owner's next
+    # request if they don't have one yet.
     response.set_cookie(
         OWNER_COOKIE, body.username, max_age=365 * 24 * 3600, httponly=True, samesite="lax"
     )
@@ -845,7 +1163,214 @@ def login(body: LoginIn, response: Response):
 @app.post("/logout")
 def logout(response: Response):
     response.delete_cookie(OWNER_COOKIE)
+    response.delete_cookie(PROJECT_COOKIE)
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Projects — one per book/novella (see schema.sql's comment on `projects`
+# for how this relates to fields/characters/relationships).
+# ---------------------------------------------------------------------------
+
+@app.get("/projects")
+def list_projects(owner: str = Depends(get_current_owner)):
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM projects WHERE owner = ? ORDER BY last_opened_at DESC", (owner,)
+        ).fetchall()
+        counts = {
+            r["project_id"]: r["n"] for r in conn.execute(
+                "SELECT project_id, COUNT(*) AS n FROM characters WHERE owner = ? GROUP BY project_id", (owner,)
+            ).fetchall()
+        }
+        return [_project_row_to_dict(r, char_count=counts.get(r["id"], 0)) for r in rows]
+    finally:
+        conn.close()
+
+
+@app.post("/projects", status_code=201)
+def create_project_route(body: ProjectIn, owner: str = Depends(get_current_owner)):
+    conn = get_conn()
+    try:
+        title = (body.title or "").strip() or "Untitled Project"
+        project_id = _create_project(conn, owner, title)
+        row = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+        result = _project_row_to_dict(row, char_count=0)
+        result["meta"] = _project_meta_list(conn, project_id)
+    finally:
+        conn.close()
+    return result
+
+
+def _get_owned_project(conn: sqlite3.Connection, project_id: int, owner: str) -> Optional[sqlite3.Row]:
+    return conn.execute(
+        "SELECT * FROM projects WHERE id = ? AND owner = ?", (project_id, owner)
+    ).fetchone()
+
+
+@app.get("/projects/{project_id}")
+def get_project(project_id: int, owner: str = Depends(get_current_owner)):
+    conn = get_conn()
+    try:
+        row = _get_owned_project(conn, project_id, owner)
+        if not row:
+            raise HTTPException(status_code=404, detail="Project not found")
+        char_count = conn.execute(
+            "SELECT COUNT(*) FROM characters WHERE project_id = ?", (project_id,)
+        ).fetchone()[0]
+        result = _project_row_to_dict(row, char_count=char_count)
+        result["meta"] = _project_meta_list(conn, project_id)
+        return result
+    finally:
+        conn.close()
+
+
+@app.put("/projects/{project_id}")
+def update_project(project_id: int, body: ProjectUpdate, owner: str = Depends(get_current_owner)):
+    conn = get_conn()
+    try:
+        row = _get_owned_project(conn, project_id, owner)
+        if not row:
+            raise HTTPException(status_code=404, detail="Project not found")
+        if body.title is not None and body.title.strip():
+            conn.execute(
+                "UPDATE projects SET title = ?, updated_at = ? WHERE id = ?",
+                (body.title.strip(), _now(), project_id),
+            )
+            conn.commit()
+        row = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+        char_count = conn.execute(
+            "SELECT COUNT(*) FROM characters WHERE project_id = ?", (project_id,)
+        ).fetchone()[0]
+        result = _project_row_to_dict(row, char_count=char_count)
+        result["meta"] = _project_meta_list(conn, project_id)
+        return result
+    finally:
+        conn.close()
+
+
+@app.delete("/projects/{project_id}", status_code=204)
+def delete_project(project_id: int, owner: str = Depends(get_current_owner)):
+    conn = get_conn()
+    try:
+        row = _get_owned_project(conn, project_id, owner)
+        if not row:
+            raise HTTPException(status_code=404, detail="Project not found")
+        char_rows = conn.execute(
+            "SELECT id FROM characters WHERE project_id = ?", (project_id,)
+        ).fetchall()
+        for c in char_rows:
+            images = conn.execute(
+                "SELECT public_id FROM character_images WHERE character_id = ?", (c["id"],)
+            ).fetchall()
+            for img in images:
+                try:
+                    cloudinary_images.destroy_image(img["public_id"])
+                except Exception as e:
+                    logger.warning(f"Could not destroy Cloudinary asset on project delete: {e}")
+        conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))  # cascades characters/fields/relationships
+        conn.commit()
+    finally:
+        conn.close()
+    schedule_backup()
+
+
+@app.post("/projects/{project_id}/activate")
+def activate_project(project_id: int, response: Response, owner: str = Depends(get_current_owner)):
+    conn = get_conn()
+    try:
+        row = _get_owned_project(conn, project_id, owner)
+        if not row:
+            raise HTTPException(status_code=404, detail="Project not found")
+        conn.execute("UPDATE projects SET last_opened_at = ? WHERE id = ?", (_now(), project_id))
+        conn.commit()
+    finally:
+        conn.close()
+    response.set_cookie(
+        PROJECT_COOKIE, str(project_id), max_age=365 * 24 * 3600, httponly=True, samesite="lax"
+    )
+    return {"id": project_id}
+
+
+@app.post("/projects/{project_id}/meta", status_code=201)
+def create_project_meta(project_id: int, body: ProjectMetaIn, owner: str = Depends(get_current_owner)):
+    conn = get_conn()
+    try:
+        row = _get_owned_project(conn, project_id, owner)
+        if not row:
+            raise HTTPException(status_code=404, detail="Project not found")
+        if not body.label or not body.label.strip():
+            raise HTTPException(status_code=400, detail="Label is required")
+        base_key = slugify(body.label)
+        key = base_key
+        existing_keys = {
+            r["key"] for r in conn.execute(
+                "SELECT key FROM project_meta WHERE project_id = ?", (project_id,)
+            ).fetchall()
+        }
+        suffix = 2
+        while key in existing_keys:
+            key = f"{base_key}_{suffix}"
+            suffix += 1
+        max_sort = conn.execute(
+            "SELECT COALESCE(MAX(sort_order), -1) FROM project_meta WHERE project_id = ?", (project_id,)
+        ).fetchone()[0]
+        cur = conn.execute(
+            "INSERT INTO project_meta (project_id, key, label, value, is_builtin, sort_order) "
+            "VALUES (?, ?, ?, ?, 0, ?)",
+            (project_id, key, body.label.strip(), body.value or "", max_sort + 1),
+        )
+        conn.commit()
+        meta_row = conn.execute("SELECT * FROM project_meta WHERE id = ?", (cur.lastrowid,)).fetchone()
+    finally:
+        conn.close()
+    schedule_backup()
+    return _project_meta_row_to_dict(meta_row)
+
+
+@app.put("/projects/{project_id}/meta/{meta_key}")
+def update_project_meta(project_id: int, meta_key: str, body: ProjectMetaUpdate, owner: str = Depends(get_current_owner)):
+    conn = get_conn()
+    try:
+        proj_row = _get_owned_project(conn, project_id, owner)
+        if not proj_row:
+            raise HTTPException(status_code=404, detail="Project not found")
+        row = conn.execute(
+            "SELECT * FROM project_meta WHERE project_id = ? AND key = ?", (project_id, meta_key)
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Project meta key not found")
+        label = body.label.strip() if body.label is not None and body.label.strip() else row["label"]
+        value = body.value if body.value is not None else row["value"]
+        conn.execute(
+            "UPDATE project_meta SET label = ?, value = ? WHERE id = ?", (label, value, row["id"])
+        )
+        conn.commit()
+        meta_row = conn.execute("SELECT * FROM project_meta WHERE id = ?", (row["id"],)).fetchone()
+    finally:
+        conn.close()
+    schedule_backup()
+    return _project_meta_row_to_dict(meta_row)
+
+
+@app.delete("/projects/{project_id}/meta/{meta_key}", status_code=204)
+def delete_project_meta(project_id: int, meta_key: str, owner: str = Depends(get_current_owner)):
+    conn = get_conn()
+    try:
+        proj_row = _get_owned_project(conn, project_id, owner)
+        if not proj_row:
+            raise HTTPException(status_code=404, detail="Project not found")
+        row = conn.execute(
+            "SELECT id FROM project_meta WHERE project_id = ? AND key = ?", (project_id, meta_key)
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Project meta key not found")
+        conn.execute("DELETE FROM project_meta WHERE id = ?", (row["id"],))
+        conn.commit()
+    finally:
+        conn.close()
+    schedule_backup()
 
 
 # ---------------------------------------------------------------------------
@@ -853,19 +1378,19 @@ def logout(response: Response):
 # ---------------------------------------------------------------------------
 
 @app.get("/characters")
-def list_characters(owner: str = Depends(get_current_owner)):
+def list_characters(owner: str = Depends(get_current_owner), project_id: int = Depends(get_current_project)):
     conn = get_conn()
     try:
         rows = conn.execute(
-            "SELECT * FROM characters WHERE owner = ? ORDER BY id DESC", (owner,)
+            "SELECT * FROM characters WHERE owner = ? AND project_id = ? ORDER BY id DESC", (owner, project_id)
         ).fetchall()
         all_values = conn.execute(
             "SELECT cv.character_id AS character_id, f.key AS key, cv.value AS value "
             "FROM character_values cv "
             "JOIN fields f ON f.id = cv.field_id "
             "JOIN characters c ON c.id = cv.character_id "
-            "WHERE c.owner = ?",
-            (owner,),
+            "WHERE c.owner = ? AND c.project_id = ?",
+            (owner, project_id),
         ).fetchall()
         values_by_char: dict = {}
         for v in all_values:
@@ -874,8 +1399,8 @@ def list_characters(owner: str = Depends(get_current_owner)):
         all_tags = conn.execute(
             "SELECT ct.character_id AS character_id, ct.tag AS tag "
             "FROM character_tags ct JOIN characters c ON c.id = ct.character_id "
-            "WHERE c.owner = ? ORDER BY ct.id",
-            (owner,),
+            "WHERE c.owner = ? AND c.project_id = ? ORDER BY ct.id",
+            (owner, project_id),
         ).fetchall()
         tags_by_char: dict = {}
         for t in all_tags:
@@ -887,12 +1412,10 @@ def list_characters(owner: str = Depends(get_current_owner)):
 
 
 @app.get("/characters/{character_id}")
-def get_character(character_id: int, owner: str = Depends(get_current_owner)):
+def get_character(character_id: int, owner: str = Depends(get_current_owner), project_id: int = Depends(get_current_project)):
     conn = get_conn()
     try:
-        row = conn.execute(
-            "SELECT id FROM characters WHERE id = ? AND owner = ?", (character_id, owner)
-        ).fetchone()
+        row = _get_owned_character(conn, character_id, owner, project_id)
         if not row:
             raise HTTPException(status_code=404, detail="Character not found")
         detail = _character_detail(conn, character_id)
@@ -901,10 +1424,14 @@ def get_character(character_id: int, owner: str = Depends(get_current_owner)):
         conn.close()
 
 
-def _upsert_values(conn: sqlite3.Connection, character_id: int, owner: str, values: dict):
+def _upsert_values(conn: sqlite3.Connection, character_id: int, project_id: int, values: dict):
+    """project_id should come from the character's OWN row (not blindly
+    from the request's active-project cookie) — defense in depth so a
+    caller that already validated ownership elsewhere can't accidentally
+    write values against the wrong project's field ids."""
     if not values:
         return
-    field_rows = conn.execute("SELECT id, key FROM fields WHERE owner = ?", (owner,)).fetchall()
+    field_rows = conn.execute("SELECT id, key FROM fields WHERE project_id = ?", (project_id,)).fetchall()
     field_id_by_key = {r["key"]: r["id"] for r in field_rows}
     for key, value in values.items():
         field_id = field_id_by_key.get(key)
@@ -933,17 +1460,17 @@ def _replace_tags(conn: sqlite3.Connection, character_id: int, tags: list):
 
 
 @app.post("/characters", status_code=201)
-def create_character(body: CharacterIn, owner: str = Depends(get_current_owner)):
+def create_character(body: CharacterIn, owner: str = Depends(get_current_owner), project_id: int = Depends(get_current_project)):
     conn = get_conn()
     try:
         now = _now()
         cur = conn.execute(
-            "INSERT INTO characters (owner, name, created_at, updated_at) VALUES (?, ?, ?, ?)",
-            (owner, (body.name or "").strip(), now, now),
+            "INSERT INTO characters (owner, project_id, name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+            (owner, project_id, (body.name or "").strip(), now, now),
         )
         character_id = cur.lastrowid
         conn.commit()
-        _upsert_values(conn, character_id, owner, body.values or {})
+        _upsert_values(conn, character_id, project_id, body.values or {})
         detail = _character_detail(conn, character_id)
     finally:
         conn.close()
@@ -952,12 +1479,10 @@ def create_character(body: CharacterIn, owner: str = Depends(get_current_owner))
 
 
 @app.put("/characters/{character_id}")
-def update_character(character_id: int, body: CharacterUpdate, owner: str = Depends(get_current_owner)):
+def update_character(character_id: int, body: CharacterUpdate, owner: str = Depends(get_current_owner), project_id: int = Depends(get_current_project)):
     conn = get_conn()
     try:
-        row = conn.execute(
-            "SELECT id FROM characters WHERE id = ? AND owner = ?", (character_id, owner)
-        ).fetchone()
+        row = _get_owned_character(conn, character_id, owner, project_id)
         if not row:
             raise HTTPException(status_code=404, detail="Character not found")
         if body.name is not None:
@@ -968,7 +1493,7 @@ def update_character(character_id: int, body: CharacterUpdate, owner: str = Depe
         else:
             conn.execute("UPDATE characters SET updated_at = ? WHERE id = ?", (_now(), character_id))
         conn.commit()
-        _upsert_values(conn, character_id, owner, body.values or {})
+        _upsert_values(conn, character_id, row["project_id"], body.values or {})
         if body.tags is not None:
             _replace_tags(conn, character_id, body.tags)
         detail = _character_detail(conn, character_id)
@@ -979,12 +1504,10 @@ def update_character(character_id: int, body: CharacterUpdate, owner: str = Depe
 
 
 @app.delete("/characters/{character_id}", status_code=204)
-def delete_character(character_id: int, owner: str = Depends(get_current_owner)):
+def delete_character(character_id: int, owner: str = Depends(get_current_owner), project_id: int = Depends(get_current_project)):
     conn = get_conn()
     try:
-        row = conn.execute(
-            "SELECT id FROM characters WHERE id = ? AND owner = ?", (character_id, owner)
-        ).fetchone()
+        row = _get_owned_character(conn, character_id, owner, project_id)
         if not row:
             raise HTTPException(status_code=404, detail="Character not found")
         images = conn.execute(
@@ -1008,13 +1531,12 @@ def delete_character(character_id: int, owner: str = Depends(get_current_owner))
 
 @app.post("/characters/{character_id}/images")
 async def upload_images(
-    character_id: int, files: list[UploadFile] = File(...), owner: str = Depends(get_current_owner)
+    character_id: int, files: list[UploadFile] = File(...),
+    owner: str = Depends(get_current_owner), project_id: int = Depends(get_current_project),
 ):
     conn = get_conn()
     try:
-        char_row = conn.execute(
-            "SELECT id FROM characters WHERE id = ? AND owner = ?", (character_id, owner)
-        ).fetchone()
+        char_row = _get_owned_character(conn, character_id, owner, project_id)
         if not char_row:
             raise HTTPException(status_code=404, detail="Character not found")
 
@@ -1055,12 +1577,10 @@ async def upload_images(
 
 
 @app.delete("/characters/{character_id}/images/{image_id}")
-def delete_image(character_id: int, image_id: int, owner: str = Depends(get_current_owner)):
+def delete_image(character_id: int, image_id: int, owner: str = Depends(get_current_owner), project_id: int = Depends(get_current_project)):
     conn = get_conn()
     try:
-        char_row = conn.execute(
-            "SELECT id FROM characters WHERE id = ? AND owner = ?", (character_id, owner)
-        ).fetchone()
+        char_row = _get_owned_character(conn, character_id, owner, project_id)
         if not char_row:
             raise HTTPException(status_code=404, detail="Character not found")
         row = conn.execute(
@@ -1092,12 +1612,10 @@ def delete_image(character_id: int, image_id: int, owner: str = Depends(get_curr
 
 
 @app.put("/characters/{character_id}/images/{image_id}/primary")
-def set_primary_image(character_id: int, image_id: int, owner: str = Depends(get_current_owner)):
+def set_primary_image(character_id: int, image_id: int, owner: str = Depends(get_current_owner), project_id: int = Depends(get_current_project)):
     conn = get_conn()
     try:
-        char_row = conn.execute(
-            "SELECT id FROM characters WHERE id = ? AND owner = ?", (character_id, owner)
-        ).fetchone()
+        char_row = _get_owned_character(conn, character_id, owner, project_id)
         if not char_row:
             raise HTTPException(status_code=404, detail="Character not found")
         row = conn.execute(
@@ -1121,11 +1639,11 @@ def set_primary_image(character_id: int, image_id: int, owner: str = Depends(get
 # `relationships` for the char_a/char_b + role_a_to_b/role_b_to_a model).
 # ---------------------------------------------------------------------------
 
-def _check_same_owner_character(conn: sqlite3.Connection, character_id: Optional[int], owner: str):
+def _check_same_owner_character(conn: sqlite3.Connection, character_id: Optional[int], owner: str, project_id: int):
     if character_id is None:
         return
     row = conn.execute(
-        "SELECT id FROM characters WHERE id = ? AND owner = ?", (character_id, owner)
+        "SELECT id FROM characters WHERE id = ? AND owner = ? AND project_id = ?", (character_id, owner, project_id)
     ).fetchone()
     if not row:
         raise HTTPException(status_code=400, detail="Must be one of your own characters")
@@ -1218,16 +1736,18 @@ def _upsert_relationship(
     return cur.lastrowid
 
 
-def _relationship_owner_row(conn: sqlite3.Connection, relationship_id: int, owner: str) -> Optional[sqlite3.Row]:
-    """A relationship row belongs to both char_a and char_b equally, so
-    ownership can be confirmed via either side (they're always the same
-    owner by construction, enforced at creation via
-    _check_same_owner_character on both from_id/to_id)."""
+def _relationship_owner_row(conn: sqlite3.Connection, relationship_id: int, owner: str, project_id: int) -> Optional[sqlite3.Row]:
+    """Checks BOTH char_a and char_b's owner+project (not just char_a's)
+    — the write-time invariant is that both sides always agree, but this
+    is the read-side defense-in-depth for that invariant rather than
+    blind trust in it, matching what create_relationship already checks
+    on both from_id/to_id via _check_same_owner_character."""
     return conn.execute(
         "SELECT r.* FROM relationships r "
         "JOIN characters ca ON ca.id = r.char_a_id "
-        "WHERE r.id = ? AND ca.owner = ?",
-        (relationship_id, owner),
+        "JOIN characters cb ON cb.id = r.char_b_id "
+        "WHERE r.id = ? AND ca.owner = ? AND ca.project_id = ? AND cb.owner = ? AND cb.project_id = ?",
+        (relationship_id, owner, project_id, owner, project_id),
     ).fetchone()
 
 
@@ -1248,11 +1768,11 @@ def _relationship_dict(conn: sqlite3.Connection, relationship_id: int, from_pers
 
 
 @app.post("/relationships", status_code=201)
-def create_relationship(body: RelationshipIn, owner: str = Depends(get_current_owner)):
+def create_relationship(body: RelationshipIn, owner: str = Depends(get_current_owner), project_id: int = Depends(get_current_project)):
     conn = get_conn()
     try:
-        _check_same_owner_character(conn, body.from_id, owner)
-        _check_same_owner_character(conn, body.to_id, owner)
+        _check_same_owner_character(conn, body.from_id, owner, project_id)
+        _check_same_owner_character(conn, body.to_id, owner, project_id)
         rel_id = _upsert_relationship(
             conn, body.from_id, body.to_id, body.role,
             custom_label=body.custom_label, custom_inverse_label=body.custom_inverse_label,
@@ -1266,10 +1786,10 @@ def create_relationship(body: RelationshipIn, owner: str = Depends(get_current_o
 
 
 @app.put("/relationships/{relationship_id}")
-def update_relationship(relationship_id: int, body: RelationshipUpdate, owner: str = Depends(get_current_owner)):
+def update_relationship(relationship_id: int, body: RelationshipUpdate, owner: str = Depends(get_current_owner), project_id: int = Depends(get_current_project)):
     conn = get_conn()
     try:
-        row = _relationship_owner_row(conn, relationship_id, owner)
+        row = _relationship_owner_row(conn, relationship_id, owner, project_id)
         if not row:
             raise HTTPException(status_code=404, detail="Relationship not found")
         if body.from_id not in (row["char_a_id"], row["char_b_id"]):
@@ -1301,10 +1821,10 @@ def update_relationship(relationship_id: int, body: RelationshipUpdate, owner: s
 
 
 @app.delete("/relationships/{relationship_id}", status_code=204)
-def delete_relationship(relationship_id: int, owner: str = Depends(get_current_owner)):
+def delete_relationship(relationship_id: int, owner: str = Depends(get_current_owner), project_id: int = Depends(get_current_project)):
     conn = get_conn()
     try:
-        row = _relationship_owner_row(conn, relationship_id, owner)
+        row = _relationship_owner_row(conn, relationship_id, owner, project_id)
         if not row:
             raise HTTPException(status_code=404, detail="Relationship not found")
         conn.execute("DELETE FROM relationships WHERE id = ?", (relationship_id,))
@@ -1315,10 +1835,12 @@ def delete_relationship(relationship_id: int, owner: str = Depends(get_current_o
 
 
 @app.get("/relationships")
-def list_relationships(owner: str = Depends(get_current_owner)):
-    """Every relationship record across the owner's whole cast in one
-    call — used by the character map, which needs the full graph rather
-    than one character's relationships at a time."""
+def list_relationships(owner: str = Depends(get_current_owner), project_id: int = Depends(get_current_project)):
+    """Every relationship record across the active project's whole cast
+    in one call — used by the character map, which needs the full graph
+    rather than one character's relationships at a time. Scoped by both
+    sides' project_id (not just char_a's) as read-side defense-in-depth
+    — see the DB trigger in schema.sql for the write-side backstop."""
     conn = get_conn()
     try:
         rows = conn.execute(
@@ -1330,8 +1852,8 @@ def list_relationships(owner: str = Depends(get_current_owner)):
             "FROM relationships r "
             "JOIN characters ca ON ca.id = r.char_a_id "
             "JOIN characters cb ON cb.id = r.char_b_id "
-            "WHERE ca.owner = ?",
-            (owner,),
+            "WHERE ca.owner = ? AND ca.project_id = ? AND cb.project_id = ?",
+            (owner, project_id, project_id),
         ).fetchall()
         return [
             {
@@ -1354,16 +1876,16 @@ def list_relationships(owner: str = Depends(get_current_owner)):
 # ---------------------------------------------------------------------------
 
 @app.get("/fields")
-def list_fields(owner: str = Depends(get_current_owner)):
+def list_fields(project_id: int = Depends(get_current_project)):
     conn = get_conn()
     try:
-        return _all_fields(conn, owner)
+        return _all_fields(conn, project_id)
     finally:
         conn.close()
 
 
 @app.post("/fields", status_code=201)
-def create_field(body: FieldIn, owner: str = Depends(get_current_owner)):
+def create_field(body: FieldIn, project_id: int = Depends(get_current_project)):
     if not body.label or not body.label.strip():
         raise HTTPException(status_code=400, detail="Label is required")
     if body.type not in VALID_FIELD_TYPES:
@@ -1373,33 +1895,7 @@ def create_field(body: FieldIn, owner: str = Depends(get_current_owner)):
 
     conn = get_conn()
     try:
-        base_key = slugify(body.label)
-        key = base_key
-        existing_keys = {
-            r["key"] for r in conn.execute("SELECT key FROM fields WHERE owner = ?", (owner,)).fetchall()
-        }
-        suffix = 2
-        while key in existing_keys:
-            key = f"{base_key}_{suffix}"
-            suffix += 1
-
-        max_sort = conn.execute(
-            "SELECT COALESCE(MAX(sort_order), -1) FROM fields WHERE owner = ?", (owner,)
-        ).fetchone()[0]
-        cur = conn.execute(
-            "INSERT INTO fields (owner, key, label, type, options, section, is_builtin, sort_order) "
-            "VALUES (?, ?, ?, ?, ?, ?, 0, ?)",
-            (
-                owner, key, body.label.strip(), body.type,
-                json.dumps(body.options) if body.options else None,
-                (body.section or "Custom").strip() or "Custom",
-                max_sort + 1,
-            ),
-        )
-        conn.commit()
-        field = _field_row_to_dict(
-            conn.execute("SELECT * FROM fields WHERE id = ?", (cur.lastrowid,)).fetchone()
-        )
+        field = _create_field(conn, project_id, body.label, body.type, body.options, body.section or "Custom")
     finally:
         conn.close()
     schedule_backup()
@@ -1407,11 +1903,11 @@ def create_field(body: FieldIn, owner: str = Depends(get_current_owner)):
 
 
 @app.put("/fields/{field_id}")
-def update_field(field_id: int, body: FieldUpdate, owner: str = Depends(get_current_owner)):
+def update_field(field_id: int, body: FieldUpdate, project_id: int = Depends(get_current_project)):
     conn = get_conn()
     try:
         row = conn.execute(
-            "SELECT * FROM fields WHERE id = ? AND owner = ?", (field_id, owner)
+            "SELECT * FROM fields WHERE id = ? AND project_id = ?", (field_id, project_id)
         ).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Field not found")
@@ -1441,11 +1937,11 @@ def update_field(field_id: int, body: FieldUpdate, owner: str = Depends(get_curr
 
 
 @app.delete("/fields/{field_id}", status_code=204)
-def delete_field(field_id: int, owner: str = Depends(get_current_owner)):
+def delete_field(field_id: int, project_id: int = Depends(get_current_project)):
     conn = get_conn()
     try:
         row = conn.execute(
-            "SELECT id FROM fields WHERE id = ? AND owner = ?", (field_id, owner)
+            "SELECT id FROM fields WHERE id = ? AND project_id = ?", (field_id, project_id)
         ).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Field not found")
@@ -1501,92 +1997,116 @@ async def restore_data(body: RestoreIn):
         conn.execute("DELETE FROM character_values")
         conn.execute("DELETE FROM characters")
         conn.execute("DELETE FROM fields")
+        conn.execute("DELETE FROM project_meta")
+        conn.execute("DELETE FROM projects")
         conn.commit()
 
-        field_id_by_key = {}
-        for f in export.get("fields", []):
-            field_owner = f.get("owner") or LEGACY_OWNER
+        restored_project_ids = []
+        for proj in export.get("projects", []):
+            proj_owner = proj.get("owner") or LEGACY_OWNER
+            now = _now()
             cur = conn.execute(
-                "INSERT INTO fields (owner, key, label, type, options, section, is_builtin, sort_order) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    field_owner, f["key"], f["label"], f["type"],
-                    json.dumps(f["options"]) if f.get("options") else None,
-                    f.get("section", "Custom"),
-                    1 if f.get("is_builtin") else 0,
-                    f.get("sort_order", 0),
-                ),
+                "INSERT INTO projects (owner, title, created_at, updated_at, last_opened_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (proj_owner, proj.get("title") or "Untitled Project", now, now, now),
             )
-            # keys are only unique per-owner, so the lookup used by
-            # character_values below needs the same (owner, key) scoping
-            field_id_by_key[(field_owner, f["key"])] = cur.lastrowid
+            project_id = cur.lastrowid
+            restored_project_ids.append(project_id)
 
-        old_to_new_char_id = {}
-        for c in export.get("characters", []):
-            char_owner = c.get("owner") or LEGACY_OWNER
-            cur = conn.execute(
-                "INSERT INTO characters (owner, name, created_at, updated_at) VALUES (?, ?, ?, ?)",
-                (char_owner, c["name"], c.get("created_at", _now()), c.get("updated_at", _now())),
-            )
-            character_id = cur.lastrowid
-            old_to_new_char_id[c["id"]] = character_id
-            for key, value in (c.get("values") or {}).items():
-                field_id = field_id_by_key.get((char_owner, key))
-                if field_id is not None and value is not None:
-                    conn.execute(
-                        "INSERT INTO character_values (character_id, field_id, value) VALUES (?, ?, ?)",
-                        (character_id, field_id, value),
-                    )
-            for tag in c.get("tags") or []:
+            for m in proj.get("meta", []):
                 conn.execute(
-                    "INSERT OR IGNORE INTO character_tags (character_id, tag) VALUES (?, ?)",
-                    (character_id, tag),
+                    "INSERT INTO project_meta (project_id, key, label, value, is_builtin, sort_order) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (project_id, m["key"], m.get("label", m["key"]), m.get("value", ""),
+                     1 if m.get("is_builtin") else 0, m.get("sort_order", 0)),
                 )
-            for i, img in enumerate(c.get("images") or []):
-                if not img.get("public_id"):
-                    continue
-                conn.execute(
-                    "INSERT INTO character_images (character_id, url, public_id, is_primary, sort_order) "
+
+            field_id_by_key = {}
+            for f in proj.get("fields", []):
+                cur = conn.execute(
+                    "INSERT INTO fields (project_id, key, label, type, options, section, is_builtin, sort_order) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        project_id, f["key"], f["label"], f["type"],
+                        json.dumps(f["options"]) if f.get("options") else None,
+                        f.get("section", "Custom"),
+                        1 if f.get("is_builtin") else 0,
+                        f.get("sort_order", 0),
+                    ),
+                )
+                field_id_by_key[f["key"]] = cur.lastrowid
+
+            old_to_new_char_id = {}
+            for c in proj.get("characters", []):
+                cur = conn.execute(
+                    "INSERT INTO characters (owner, project_id, name, created_at, updated_at) "
                     "VALUES (?, ?, ?, ?, ?)",
-                    (character_id, img.get("url", ""), img["public_id"], 1 if img.get("is_primary") else 0, i),
+                    (proj_owner, project_id, c["name"], c.get("created_at", _now()), c.get("updated_at", _now())),
                 )
-
-        # Both characters' exports describe the same shared relationship
-        # record, so _upsert_relationship naturally dedupes processing it
-        # from each side rather than creating two rows.
-        for c in export.get("characters", []):
-            new_character_id = old_to_new_char_id.get(c["id"])
-            for rel in c.get("relationships") or []:
-                new_related_id = old_to_new_char_id.get(rel.get("related_id"))
-                if new_character_id is None or new_related_id is None:
-                    continue
-                role_key = rel.get("role_key") or ""
-                if role_key.startswith("custom:"):
-                    _upsert_relationship(
-                        conn, new_character_id, new_related_id, "custom",
-                        custom_label=rel.get("role_label"), category_override=rel.get("category"),
+                character_id = cur.lastrowid
+                old_to_new_char_id[c["id"]] = character_id
+                for key, value in (c.get("values") or {}).items():
+                    field_id = field_id_by_key.get(key)
+                    if field_id is not None and value is not None:
+                        conn.execute(
+                            "INSERT INTO character_values (character_id, field_id, value) VALUES (?, ?, ?)",
+                            (character_id, field_id, value),
+                        )
+                for tag in c.get("tags") or []:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO character_tags (character_id, tag) VALUES (?, ?)",
+                        (character_id, tag),
                     )
-                elif role_key:
-                    _upsert_relationship(conn, new_character_id, new_related_id, role_key)
+                for i, img in enumerate(c.get("images") or []):
+                    if not img.get("public_id"):
+                        continue
+                    conn.execute(
+                        "INSERT INTO character_images (character_id, url, public_id, is_primary, sort_order) "
+                        "VALUES (?, ?, ?, ?, ?)",
+                        (character_id, img.get("url", ""), img["public_id"], 1 if img.get("is_primary") else 0, i),
+                    )
+
+            # Both characters' exports describe the same shared
+            # relationship record, so _upsert_relationship naturally
+            # dedupes processing it from each side rather than creating
+            # two rows. Both characters are always in old_to_new_char_id
+            # together (same project loop), so this never spans projects.
+            for c in proj.get("characters", []):
+                new_character_id = old_to_new_char_id.get(c["id"])
+                for rel in c.get("relationships") or []:
+                    new_related_id = old_to_new_char_id.get(rel.get("related_id"))
+                    if new_character_id is None or new_related_id is None:
+                        continue
+                    role_key = rel.get("role_key") or ""
+                    if role_key.startswith("custom:"):
+                        _upsert_relationship(
+                            conn, new_character_id, new_related_id, "custom",
+                            custom_label=rel.get("role_label"), category_override=rel.get("category"),
+                        )
+                    elif role_key:
+                        _upsert_relationship(conn, new_character_id, new_related_id, role_key)
 
         conn.commit()
-        # no-op per owner if fields already restored, safety net if export was empty
-        for u in ALLOWED_OWNERS:
-            _seed_builtin_fields(conn, u)
+        # no-op per project if fields already restored, safety net if a
+        # project's export was empty
+        for project_id in restored_project_ids:
+            count = conn.execute("SELECT COUNT(*) FROM fields WHERE project_id = ?", (project_id,)).fetchone()[0]
+            if count == 0:
+                _seed_builtin_fields(conn, project_id)
     finally:
         conn.close()
     return {"restored": True, "exported_at": export.get("exported_at")}
 
 
 @app.get("/status")
-def status(owner: str = Depends(get_current_owner)):
+def status(owner: str = Depends(get_current_owner), project_id: int = Depends(get_current_project)):
     conn = get_conn()
     try:
         char_count = conn.execute(
-            "SELECT COUNT(*) FROM characters WHERE owner = ?", (owner,)
+            "SELECT COUNT(*) FROM characters WHERE owner = ? AND project_id = ?", (owner, project_id)
         ).fetchone()[0]
         field_count = conn.execute(
-            "SELECT COUNT(*) FROM fields WHERE owner = ?", (owner,)
+            "SELECT COUNT(*) FROM fields WHERE project_id = ?", (project_id,)
         ).fetchone()[0]
     finally:
         conn.close()

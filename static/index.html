@@ -42,9 +42,27 @@ header {
   position: sticky; top: 0; z-index: 30; display: flex; align-items: center; gap: 14px;
   flex-wrap: wrap; padding: 13px 20px; background: var(--panel); border-bottom: 1px solid var(--line);
 }
-.wordmark { display: flex; align-items: baseline; gap: 11px; margin-right: auto; cursor: pointer; }
+.wordmark-group { display: flex; align-items: baseline; gap: 10px; margin-right: auto; position: relative; }
+.wordmark { display: flex; align-items: baseline; cursor: pointer; }
 .wordmark span:first-child { font-family: var(--hf); font-size: 23px; font-weight: 600; letter-spacing: .01em; font-style: italic; }
-.wordmark span:last-child { font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: var(--muted); }
+#char-count { font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: var(--muted); }
+.project-switcher-btn { display: flex; align-items: baseline; gap: 5px; border: none; background: none; cursor: pointer; font-family: var(--hf); font-size: 17px; font-style: italic; color: var(--muted); padding: 2px 5px; border-radius: 6px; max-width: 32vw; }
+.project-switcher-btn span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-switcher-btn .ps-caret { font-family: 'IBM Plex Mono', monospace; font-size: 10px; font-style: normal; }
+.project-switcher-btn:hover { color: var(--ink); background: var(--panel2); }
+.project-popover { display: none; position: absolute; top: calc(100% + 8px); left: 0; z-index: 41; width: 270px; max-height: 60vh; overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 8px; box-shadow: 0 16px 40px -14px rgba(0,0,0,.6); animation: drin .15s ease both; }
+.project-popover.pp-open { display: block; }
+.pp-item { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; border: none; background: none; padding: 9px 10px; border-radius: 8px; cursor: pointer; font-size: 13.5px; color: var(--ink); }
+.pp-item:hover { background: var(--panel2); }
+.pp-item.active { background: var(--chip); font-weight: 600; }
+.pp-item .pp-count { margin-left: auto; font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; color: var(--muted); }
+.pp-divider { height: 1px; background: var(--line); margin: 6px 4px; }
+.pp-action { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; border: none; background: none; padding: 9px 10px; border-radius: 8px; cursor: pointer; font-size: 13px; color: var(--muted); }
+.pp-action:hover { background: var(--panel2); color: var(--ink); }
+.pm-meta-row { display: flex; align-items: center; gap: 8px; background: var(--panel2); border: 1px solid var(--line); border-radius: 9px; padding: 8px 10px; }
+.pm-meta-label { flex: 1 1 130px; font-size: 12.5px; color: var(--muted); }
+.pm-meta-value { flex: 2 1 200px; padding: 7px 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 7px; font-size: 13px; }
+.pm-meta-delete { border: 1px solid var(--line); background: var(--panel); width: 40px; padding: 6px 0; border-radius: 7px; cursor: pointer; color: var(--danger); font-size: 12px; flex: none; }
 #search-input { width: min(260px, 50vw); padding: 8px 12px; background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; font-size: 14px; }
 .theme-toggle { display: flex; gap: 2px; padding: 3px; background: var(--panel2); border: 1px solid var(--line); border-radius: 9px; }
 .theme-toggle button { border: none; padding: 6px 11px; border-radius: 6px; cursor: pointer; font-size: 12px; font-family: 'IBM Plex Mono', monospace; background: transparent; color: var(--muted); }
@@ -211,7 +229,14 @@ main { padding: 0 20px 70px; }
 <body>
 
 <header style="display:none">
-  <div class="wordmark" id="wordmark"><span>Dramatis</span><span id="char-count"></span></div>
+  <div class="wordmark-group" id="wordmark-group">
+    <div class="wordmark" id="wordmark"><span>Dramatis</span></div>
+    <button class="project-switcher-btn" id="project-switcher-btn" title="Switch project">
+      <span id="project-switcher-label"></span><span class="ps-caret">▾</span>
+    </button>
+    <span id="char-count"></span>
+    <div class="project-popover" id="project-popover"></div>
+  </div>
   <input id="search-input" placeholder="Search name, role, species, tag…">
   <div class="theme-toggle" id="theme-toggle"></div>
   <button class="btn-solid" id="new-btn">+ New</button>
@@ -260,6 +285,7 @@ let STATE = {
   theme: localStorage.getItem('dramatis.theme') || 'dark',
   view: 'grid', selectedId: null, selectedDetail: null,
   search: '', activeTag: null,
+  project: null, projects: [],
 };
 
 // ---------------------------------------------------------------- helpers
@@ -348,6 +374,14 @@ function buildHeaderOnce() {
     try { await api('POST', '/logout'); } catch (e) {}
     window.location.reload();
   });
+  document.getElementById('project-switcher-btn').addEventListener('click', e => {
+    e.stopPropagation();
+    toggleProjectPopover();
+  });
+  document.addEventListener('click', e => {
+    if (e.target.closest('.project-popover') || e.target.closest('.project-switcher-btn')) return;
+    closeProjectPopover();
+  });
   renderThemeToggle();
 }
 
@@ -379,6 +413,208 @@ function updateBackupDot() {
     : 'Not backed up yet';
 }
 
+// ---------------------------------------------------------------- project switcher
+
+function renderProjectSwitcherButton() {
+  document.getElementById('project-switcher-label').textContent = STATE.project ? STATE.project.title : '';
+}
+
+function toggleProjectPopover() {
+  const pop = document.getElementById('project-popover');
+  const willOpen = !pop.classList.contains('pp-open');
+  closeProjectPopover();
+  if (willOpen) { drawProjectPopover(); pop.classList.add('pp-open'); }
+}
+
+function closeProjectPopover() {
+  document.getElementById('project-popover').classList.remove('pp-open');
+}
+
+function drawProjectPopover() {
+  const pop = document.getElementById('project-popover');
+  const sorted = [...STATE.projects].sort((a, b) => (a.last_opened_at < b.last_opened_at ? 1 : -1));
+  pop.innerHTML = sorted.map(p => `
+    <button class="pp-item ${STATE.project && p.id === STATE.project.id ? 'active' : ''}" data-id="${p.id}">
+      <span>${escapeHtml(p.title || 'Untitled Project')}</span>
+      <span class="pp-count">${p.character_count}</span>
+    </button>`).join('') + `
+    <div class="pp-divider"></div>
+    <button class="pp-action" id="pp-new">+ New project</button>
+    <button class="pp-action" id="pp-settings">Project settings…</button>`;
+
+  pop.querySelectorAll('.pp-item').forEach(btn => {
+    btn.addEventListener('click', () => switchProject(Number(btn.dataset.id)));
+  });
+  document.getElementById('pp-new').addEventListener('click', () => { closeProjectPopover(); openNewProjectModal(); });
+  document.getElementById('pp-settings').addEventListener('click', () => { closeProjectPopover(); openProjectSettingsModal(); });
+}
+
+async function switchProject(id) {
+  if (STATE.project && id === STATE.project.id) { closeProjectPopover(); return; }
+  closeProjectPopover();
+  try {
+    const project = await api('POST', `/projects/${id}/activate`);
+    STATE.project = STATE.projects.find(p => p.id === id) || project;
+    STATE.projects = await api('GET', '/projects');
+    STATE.project = STATE.projects.find(p => p.id === id) || STATE.project;
+  } catch (e) {
+    alert('Could not switch project: ' + e.message);
+    return;
+  }
+  renderProjectSwitcherButton();
+  STATE.search = '';
+  STATE.activeTag = null;
+  try {
+    STATE.fields = await api('GET', '/fields');
+  } catch (e) {
+    alert('Could not load this project’s fields: ' + e.message);
+  }
+  await loadStatus();
+  await goGrid();
+}
+
+function openNewProjectModal() {
+  const root = document.getElementById('modal-root');
+  root.innerHTML = `
+    <div class="modal-scrim" id="np-scrim">
+      <div class="modal-box" style="width:min(420px,100%)" id="np-box">
+        <h2>New project</h2>
+        <p class="lede">A separate cast, field set, and map — good for a new book or novella.</p>
+        <label class="modal-label">Title</label>
+        <input class="modal-input" id="np-title" placeholder="e.g. Testing the Spirits">
+        <div class="modal-actions-end">
+          <button class="btn-line" id="np-cancel">Cancel</button>
+          <button class="btn-solid" id="np-save">Create</button>
+        </div>
+      </div>
+    </div>`;
+  const scrim = document.getElementById('np-scrim');
+  scrim.addEventListener('click', e => { if (e.target === scrim) closeModal(); });
+  document.getElementById('np-box').addEventListener('click', e => e.stopPropagation());
+  document.getElementById('np-cancel').addEventListener('click', closeModal);
+  document.getElementById('np-title').focus();
+  document.getElementById('np-save').addEventListener('click', async () => {
+    const title = document.getElementById('np-title').value.trim() || 'Untitled Project';
+    try {
+      const project = await api('POST', '/projects', { title });
+      STATE.projects = await api('GET', '/projects');
+      closeModal();
+      await switchProject(project.id);
+    } catch (e) {
+      alert('Could not create project: ' + e.message);
+    }
+  });
+}
+
+// ---------------------------------------------------------------- project settings modal
+
+async function openProjectSettingsModal() {
+  let project;
+  try {
+    project = await api('GET', `/projects/${STATE.project.id}`);
+  } catch (e) {
+    alert('Could not load project settings: ' + e.message);
+    return;
+  }
+  const root = document.getElementById('modal-root');
+  root.innerHTML = `
+    <div class="modal-scrim" id="ps-scrim">
+      <div class="modal-box" style="width:min(520px,100%);max-height:82vh;overflow:auto" id="ps-box">
+        <h2>Project settings</h2>
+        <p class="lede">Metadata for this book — add your own fields the same way you add character fields.</p>
+        <label class="modal-label">Title</label>
+        <input class="modal-input" id="ps-title" value="${escapeHtml(project.title)}">
+        <div id="ps-meta-list" style="display:flex;flex-direction:column;gap:8px;margin-bottom:16px"></div>
+        <button class="btn-line" id="ps-add-meta" style="margin-bottom:20px">+ Add project field</button>
+        <div class="modal-actions-end" style="justify-content:space-between">
+          <button class="btn-line" id="ps-delete" style="color:var(--danger)">Delete project</button>
+          <button class="btn-solid" id="ps-done">Done</button>
+        </div>
+      </div>
+    </div>`;
+
+  const scrim = document.getElementById('ps-scrim');
+  scrim.addEventListener('click', e => { if (e.target === scrim) closeProjectSettingsModal(); });
+  document.getElementById('ps-box').addEventListener('click', e => e.stopPropagation());
+  document.getElementById('ps-done').addEventListener('click', closeProjectSettingsModal);
+
+  const titleInput = document.getElementById('ps-title');
+  titleInput.addEventListener('change', async () => {
+    const title = titleInput.value.trim();
+    if (!title) { titleInput.value = project.title; return; }
+    try {
+      const updated = await api('PUT', `/projects/${project.id}`, { title });
+      project.title = updated.title;
+      STATE.project.title = updated.title;
+      STATE.projects = await api('GET', '/projects');
+      renderProjectSwitcherButton();
+    } catch (e) {
+      alert('Could not rename project: ' + e.message);
+    }
+  });
+
+  document.getElementById('ps-add-meta').addEventListener('click', async () => {
+    const label = prompt('Field name (e.g. Setting, Logline, Viewpoint):');
+    if (!label || !label.trim()) return;
+    try {
+      await api('POST', `/projects/${project.id}/meta`, { label: label.trim() });
+      project = await api('GET', `/projects/${project.id}`);
+      drawProjectMetaList(project);
+    } catch (e) {
+      alert('Could not add field: ' + e.message);
+    }
+  });
+
+  document.getElementById('ps-delete').addEventListener('click', async () => {
+    if (!confirm(`Delete "${project.title}" permanently? This removes every character, field, and relationship in it.`)) return;
+    try {
+      await api('DELETE', `/projects/${project.id}`);
+    } catch (e) {
+      alert('Could not delete project: ' + e.message);
+      return;
+    }
+    closeModal();
+    window.location.reload();
+  });
+
+  drawProjectMetaList(project);
+}
+
+function closeProjectSettingsModal() {
+  closeModal();
+}
+
+function drawProjectMetaList(project) {
+  const list = document.getElementById('ps-meta-list');
+  const sorted = [...project.meta].sort((a, b) => a.sort_order - b.sort_order);
+  list.innerHTML = sorted.map(m => `
+    <div class="pm-meta-row" data-key="${escapeHtml(m.key)}">
+      <span class="pm-meta-label">${escapeHtml(m.label)}</span>
+      <input class="pm-meta-value" data-role="value" value="${escapeHtml(m.value)}" placeholder="—">
+      <button class="pm-meta-delete" data-role="delete">&times;</button>
+    </div>`).join('');
+
+  list.querySelectorAll('.pm-meta-row').forEach(row => {
+    const key = row.dataset.key;
+    row.querySelector('[data-role=value]').addEventListener('change', async e => {
+      try {
+        await api('PUT', `/projects/${project.id}/meta/${encodeURIComponent(key)}`, { value: e.target.value });
+      } catch (err) {
+        alert('Could not save: ' + err.message);
+      }
+    });
+    row.querySelector('[data-role=delete]').addEventListener('click', async () => {
+      try {
+        await api('DELETE', `/projects/${project.id}/meta/${encodeURIComponent(key)}`);
+        project.meta = project.meta.filter(m => m.key !== key);
+        drawProjectMetaList(project);
+      } catch (err) {
+        alert('Could not remove field: ' + err.message);
+      }
+    });
+  });
+}
+
 // ---------------------------------------------------------------- boot / routing
 
 window.addEventListener('DOMContentLoaded', async () => {
@@ -398,6 +634,22 @@ window.addEventListener('DOMContentLoaded', async () => {
   document.querySelector('header').style.display = '';
   buildHeaderOnce();
   updateUserBadge();
+
+  try {
+    STATE.projects = await api('GET', '/projects');
+    let activeProject = STATE.projects[0]; // /projects orders by last_opened_at DESC
+    if (!activeProject) {
+      activeProject = await api('POST', '/projects', {});
+      STATE.projects = [activeProject];
+    }
+    await api('POST', `/projects/${activeProject.id}/activate`);
+    STATE.project = activeProject;
+  } catch (e) {
+    document.getElementById('main-content').innerHTML = `<div class="empty-state"><div class="title">Can't reach the server</div><p>${escapeHtml(e.message)}</p></div>`;
+    return;
+  }
+  renderProjectSwitcherButton();
+
   try {
     [STATE.fields, STATE.relationshipRoles] = await Promise.all([
       api('GET', '/fields'),
