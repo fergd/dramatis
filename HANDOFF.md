@@ -1,285 +1,278 @@
 # Dramatis — Project Handoff
 
-**Point in time:** 2026-07-19. Built from `BRIEF.md` plus a high-fidelity
-design handoff (`Dramatis.dc.html` + its own `README.md`, bundled as
-`Character Profile Builder.zip`), visually verified end-to-end in a real
-Chrome session, live-tested against a real Cloudinary account, and
-**deployed and running on backupbox** — see "Deployed and live" and
-"Verified so far" below. Google Drive backup was deliberately deferred by
-the owner (see "Known gaps"), not left unfinished.
+**Point in time:** 2026-08-08. Supersedes the original 2026-07-19 handoff below
+this line's history — that version described the very first build, before
+auth, themes, relationships, the map, multi-project support, and document
+import existed. Everything in this file reflects the app as actually deployed
+and verified today.
 
-**Repo:** `git@github.com:fergd/dramatis.git`, public, `main` branch,
-root commit `42e1256` pushed 2026-07-19.
-**Deployed and live** on `backupbox` as of 2026-07-19:
-`systemctl status dramatis` → active, 35MB RSS. Reachable at
-`https://backupbox.tailfb9f14.ts.net:8421/` (own dedicated `tailscale
-serve --https=8421` endpoint, distinct from zamak's default-443 root
-path — confirmed both `/status` and `/` return 200 through the real
-HTTPS URL, not just localhost). Working dir `/home/christan/Projects/
-dramatis`, venv + deps installed, `.env` has the real `CLOUDINARY_URL`
-(reused from zamak, same as local dev).
+**Repo:** `git@github.com:fergd/dramatis.git`, public, `main` branch, latest
+commit `7b74c70`.
 
-**Memory blocker cleared first** — backupbox was still on
-`graphical.target` with 185MB free RAM and swap 100% full; switched to
-`multi-user.target` and rebooted (confirmed all of the owner's actual
-workloads — zamak-ledger, the `photos-bu.sh`/`videos-bu.sh` cron backups,
-docker, Plex, tailscaled — run under `multi-user.target`, not
-`graphical.target`; only desktop-only units like `gdm` dropped). Now
-1.8GB free, swap empty.
+**Deployed and live** on `backupbox` at
+`https://backupbox.tailfb9f14.ts.net:8421/` — own systemd service
+(`dramatis.service`), own dedicated `tailscale serve --https=8421` endpoint.
+Working dir `/home/christan/Projects/dramatis`. Two people use it (Fergus,
+Esme) via a password-less "who's logging in?" picker — Tailscale is the real
+access boundary, the login only separates each person's data.
 
-**One deploy bug hit and fixed:** the systemd unit's first version bound
-uvicorn to `0.0.0.0:8421` — but `tailscale serve --https=8421` makes
-`tailscaled` itself bind port 8421 *on the tailscale interface* to
-terminate HTTPS there before proxying to `127.0.0.1:8421`. Binding
-`0.0.0.0` includes that same interface, so uvicorn and tailscaled fought
-over the same port and the service sat in an `activating (auto-restart)`
-crash loop (`journalctl` showed `[Errno 98] address already in use`).
-Zamak never hits this because it uses `tailscale serve`'s default port
-443, not a dedicated `--https=` port. Fixed by binding uvicorn to
-`127.0.0.1` only — also the more correct choice regardless, since
-`tailscale serve` should be the only public-facing entry point.
+## What this is now
 
-`sudo` was required for `systemctl daemon-reload`/`enable`/`restart` and
-for the `multi-user.target` reboot — those two steps needed the owner to
-run the commands directly (password not available/appropriate to
-automate). Everything else — `git clone`, venv setup, `.env`, and
-`tailscale serve` configuration itself — needed no elevated privilege.
-
-## What this is
-
-A single-user, self-hosted character-profile catalog for the Baretext
-novel-writing project — create a character, upload portraits, fill in
-fields (built-in + your own), browse the cast as a gallery of editorial
-cards. Companion to `zamak-ledger`, deliberately built to mirror its
-architecture (see `BRIEF.md` §1 for the specific decisions and why).
+A self-hosted, multi-project character-profile catalog for novel writing.
+Each person has their own **projects** (one per book/novella); each project
+has its own character field set, metadata, and relationship graph. Within a
+project: create characters, upload multiple portraits (one primary), fill in
+built-in + custom fields, tag them, and link them together with structured,
+reciprocal relationships (a fixed role catalog — Parent/Child, Rival, Fiancé(e),
+etc. — plus custom roles) visualized as a force-directed map. A whole project
+can also be bootstrapped by uploading a prose dossier — Claude reads it and
+proposes characters/fields/relationships for review before anything is saved.
 
 ## Architecture
 
 ```
-Browser -> static/index.html (buildless, vanilla JS, 3 themes via CSS custom properties)
+Browser -> static/index.html (buildless, vanilla JS, 5 themes via CSS custom properties)
               |
             app.py (FastAPI)
               |
-    +---------+----------+------------------+
-    |         |          |                  |
-cloudinary_  drive_    schema.sql        profiles.db
-images.py   backup.py  (canonical       (fields, characters,
-(portraits)  (Drive     schema)          character_values,
-             OAuth +                     character_images,
-             backup/                     character_tags,
-             restore)                    relationships)
+    +---------+----------+------------------+------------------+
+    |         |          |                  |                  |
+cloudinary_  drive_    import_extract.py  schema.sql        profiles.db
+images.py   backup.py  (Claude/Anthropic  (canonical        (projects, project_meta,
+(portraits)  (Drive     dossier            schema)           fields, characters,
+             OAuth +    extraction)                          character_values,
+             backup/                                         character_images,
+             restore)                                        character_tags,
+                                                               relationships)
 ```
 
-## Design deviations from BRIEF.md (resolved, both adopted)
+## Data model (current)
 
-The bundled design reference (`Dramatis.dc.html`) went beyond `BRIEF.md`
-in two places; the owner confirmed both should be built as designed
-rather than reverted to the brief's simpler model:
+See `schema.sql` for full column comments — this is the authoritative source,
+kept meticulously commented on purpose. Summary of the current shape:
 
-1. **Multiple portraits with a selectable primary**, not a single
-   `portrait_url`/`portrait_public_id` pair on `characters`. Implemented
-   as a `character_images` table (`character_id, url, public_id,
-   is_primary, sort_order`) — `POST/DELETE /characters/{id}/images[/...]`
-   handle a set, not one image. Deleting the primary promotes the next
-   image by `sort_order`; if a character has no images, the primary
-   image is simply absent (placeholder initials shown instead).
-2. **Structured character-to-character relationships**, not a plain
-   textarea. Implemented as a `relationships` table (`character_id,
-   related_id, label`), directional — the row lives on `character_id`'s
-   detail view and points at `related_id`. Both FKs cascade
-   independently, so deleting either character in the pair cleans up the
-   row (confirmed via a real delete during testing — see "Verified" below).
+- **`projects`** — `id`, `owner`, `title`, timestamps, `last_opened_at` (drives
+  the "resume where I left off" fallback when no active-project cookie is
+  set). One project per book; not shared between people.
+- **`project_meta`** — flexible key/value per project (setting, form,
+  viewpoint, logline, notes seeded as builtins; authors can add custom keys
+  the same way they add character fields). `is_builtin` flag is informational
+  only, like `fields.is_builtin` — doesn't block deletion.
+- **`fields`** — now **project-scoped** (`project_id`, not `owner` — that
+  column was dropped in the Projects migration). `key` unique per project,
+  not globally. type: text/textarea/number/select/date/color.
+- **`characters`** — `owner` (kept, cheap and avoids a join for owner-scoped
+  queries) **and** `project_id` (which book). A character belongs to exactly
+  one project.
+- **`character_values`** — EAV table, `(character_id, field_id)`, unchanged
+  in shape since the original build.
+- **`character_images`**, **`character_tags`** — unchanged since the
+  original build (multi-portrait-with-primary; free-text tags).
+- **`relationships`** — one **undirected** record per pair-and-tie (reworked
+  from the original directional/free-text model). `char_a_id < char_b_id`
+  (CHECK-enforced canonical ordering), `role_a_to_b`/`role_b_to_a` are
+  catalog keys (`RELATIONSHIP_ROLES` in `app.py`, ~50 entries with real
+  inverses and categories) or `custom:<slug>` for author-defined ties.
+  `UNIQUE(char_a_id, char_b_id, role_a_to_b)` allows multiple distinct ties
+  per pair (e.g. Sibling *and* Rival) but not the same role twice. Two DB
+  triggers (`trg_relationships_same_project_ins`/`_upd`) reject any
+  relationship whose two characters don't share a `project_id` — a
+  defense-in-depth backstop on top of the application-level checks, since a
+  `CHECK` constraint can't do that cross-row comparison itself.
 
-Two more additions came from the design, not in `BRIEF.md` at all:
-**tags** (`character_tags` table, free-text, drives the gallery's filter
-chip row) and **field sections** (`fields.section`, groups the detail
-view into Identity/Description/Notes/Custom-or-anything, drives the
-"Group under" picker in the Add Field modal).
+**Role catalog is global**, not per-project — the vocabulary (Parent/Child,
+Rival, ...) is universal; only *fields* and *project_meta* are per-project.
 
-## Storage locations
+## API surface
 
-Same discipline as zamak — nothing here is committed to git.
-
-- **`profiles.db`** — SQLite, gitignored. Working dir `~/Projects/dramatis/`
-  on backupbox once deployed.
-- **Portraits → Cloudinary**, folder `dramatis`. No local image storage,
-  no static image mount. Each `character_images` row stores the
-  Cloudinary `secure_url` + `public_id`; the API derives width-capped
-  URLs on read (`derived_url()` in `cloudinary_images.py`) rather than
-  storing multiple pre-sized copies.
-- **`.env`** — `CLOUDINARY_URL`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`.
-  Gitignored. See `.env.example`.
-- **`token.json`** — Google OAuth refresh token, produced by
-  `drive_backup.py --authorize` run **locally** (backupbox is headless —
-  see README's Google Drive setup section), then copied to the server.
-  Gitignored.
-- **`schema.sql`** — canonical schema. `app.py`'s `get_conn()` runs
-  `executescript` (no-op on existing tables) then a light column-level
-  auto-migration (`_migrate_table`), same pattern as zamak.
+Full CRUD for `projects` (+ `/activate`, `/meta` sub-resource), `characters`,
+`fields`; sub-resources for `images` and `relationships`; `/relationship_roles`
+for the catalog; `/import/extract` + `/import/commit` for document import;
+`/export`, `/backup`, `/restore`, `/status` for backup. Every
+project-scoped route takes `project_id: int = Depends(get_current_project)`,
+which resolves the active project from the `dramatis_project` cookie with a
+three-case fallback (resume most-recently-opened if no cookie and projects
+exist; auto-provision a first project if none exist; hard 404 if the cookie
+doesn't resolve for the current owner — see `app.py`'s `get_current_project`
+docstring). See `app.py` route definitions for the full surface.
 
 ## File inventory
 
 | File | Purpose |
 |---|---|
-| `app.py` | FastAPI app — all routes, DB connection + auto-migration, debounced/daily Drive backup scheduling |
-| `schema.sql` | Canonical schema: `fields`, `characters`, `character_values`, `character_images`, `character_tags`, `relationships` |
-| `cloudinary_images.py` | Upload/destroy/derived-URL helpers — generic (`upload_image`/`destroy_image`), used for every image a character has |
-| `drive_backup.py` | Google Drive OAuth + backup/restore/prune. Also a CLI (`--authorize`) for the one-time local consent flow |
-| `static/index.html` | Full frontend — gallery, detail (combined view+edit, autosave), Add Field / Manage Fields / Backup modals, 3 themes |
+| `app.py` | FastAPI app — all routes, DB connection + auto-migration chain, debounced/daily Drive backup scheduling |
+| `schema.sql` | Canonical schema: `projects`, `project_meta`, `fields`, `characters`, `character_values`, `character_images`, `character_tags`, `relationships` (+ triggers) |
+| `cloudinary_images.py` | Upload/destroy/derived-URL helpers for portraits |
+| `drive_backup.py` | Google Drive OAuth + backup/restore/prune, plus a CLI (`--authorize`) for the one-time local consent flow |
+| `import_extract.py` | Claude/Anthropic dossier extraction — text extraction (md/txt/docx/pdf) + the structured-JSON extraction prompt/call |
+| `static/index.html` | Full frontend — project switcher, gallery, detail (combined view+edit, autosave), relationship map, import flow, Add Field/Manage Fields/Project Settings/Backup modals, 5 themes |
 | `requirements.txt` | Python deps |
-| `.env.example` | Documents the required/optional env vars |
-| `README.md` | Setup, run, credential steps, deploy loop, the memory caveat |
+| `.env.example` | Documents the required/optional env vars, including `ANTHROPIC_API_KEY` |
+| `README.md` | Setup, run, credential steps, deploy loop |
 | `HANDOFF.md` | This file |
 
-## Data model
+## Auth model
 
-See `schema.sql` for full column comments. Summary:
-
-- **`fields`** — `key` (unique slug), `label`, `type` (text/textarea/
-  number/select/date/color), `options` (JSON, select only), `section`,
-  `is_builtin`, `sort_order`. Seeded on first run (`BUILTIN_FIELDS` in
-  `app.py` — kept in one place per the brief, matches the design's
-  `DEFAULT_SCHEMA` exactly, **not** `BRIEF.md`'s original seed list: no
-  "Full Name" field (name is a first-class column, not a field), no
-  "Relationships" textarea (structured table instead)).
-- **`characters`** — `id`, `name` (nullable-empty — a brand-new character
-  exists the instant "+ New" is clicked, before it's named), timestamps.
-- **`character_values`** — EAV table, one row per `(character_id,
-  field_id)`. A new field applies to every character instantly because
-  reads treat a missing row as an empty value — no backfill needed.
-- **`character_images`**, **`character_tags`**, **`relationships`** — see
-  "Design deviations" above.
-
-## API surface
-
-Full CRUD for `characters`, `fields`; sub-resources for `images` and
-`relationships` under `/characters/{id}/...`; `/export`, `/backup`,
-`/restore`, `/status` for backup. See `app.py` route definitions — the
-brief's original API table (`BRIEF.md` §6) is close but doesn't cover the
-image-set and relationship endpoints added for the design deviations.
+Not a security boundary — Tailscale is (see README). `dramatis_owner` cookie
+picks which person's data a request sees (`get_current_owner` dependency);
+`dramatis_project` cookie picks which of that person's projects
+(`get_current_project`). `ALLOWED_OWNERS`/`DRAMATIS_USERS` env var lists who
+can log in.
 
 ## Frontend architecture notes
 
-Single `static/index.html`, no build step, three CSS themes (Noir default,
-Atlas, Archive) applied as CSS custom properties on `documentElement` —
-same mechanism the design prototype uses, same exact hex values.
+Single `static/index.html`, no build step, five CSS themes (Ember default,
+Parchment, Amstrad, Grove, Dracula — matched to the sibling Baretext project's
+palette) applied as CSS custom properties on `documentElement`.
 
-**Autosave, no Save button** — every field/name/tag/relationship/image
-edit persists on `change` (blur), matching the design's interaction
-model. This required deliberately *not* doing a full-view re-render after
-most successful saves (the natural instinct after a save completes),
-since the user has often already moved focus to the next field by the
-time the network round-trip resolves — a full innerHTML rebuild would
-yank focus out from under them. Instead: simple field values update
-local state silently (the DOM already shows what the user typed); tags,
-relationships, and images get *scoped* redraws (`redrawTagRow()`,
-`redrawRelationships()`, `redrawPortraitBlock()`) that only rebuild their
-own container; only field-schema changes (add/rename/reorder/delete a
-field, closing those modals) trigger a full section rebuild, which is
-fine since that's a deliberate, focus-abandoning action anyway.
+**Autosave, no Save button** everywhere it originally applied still applies.
+Project title/meta edits in the settings modal also autosave on blur/change,
+matching the same pattern.
 
-**Collection numbers** (`№ 001`) are computed client-side from array
-position, not stored — same as the design prototype. `GET /characters`
-returns newest-first (`ORDER BY id DESC`), matching the prototype's
-"prepend new character to the front" behavior, so a freshly-created
-character reliably lands at №001.
+**View routing** is a flat `STATE.view` switch (`grid`/`detail`/`map`/
+`import`), each with its own `go*()` loader + `render*()` function pair — see
+`goGrid`/`goDetail`/`goMap`/`goImport` in `static/index.html`. The import flow
+has its own two-stage sub-state (`STATE.importState.stage`: `upload` →
+`loading` → `review`) since it doesn't fit the single-fetch-then-render shape
+the other views use.
 
-## Verified so far
+**Relationship map**: force-directed simulation (custom, no library),
+SVG-rendered, with a fractal-noise grain filter for texture. Edge color is
+fixed per category (not theme-derived) so "red = Antagonistic" stays true
+across all 5 themes. A pair holding more than one tie renders as offset
+parallel lines, not overlapping.
 
-**Backend:** all routes exercised end-to-end via curl against a live
-local server: fields seeding, characters CRUD, custom field add/rename/
-reorder/delete (including cascade-deleting `character_values`), tags
-(full-replace semantics), relationships (create-blank → set target → set
-label, confirmed the FK cascade when the *target* character is deleted,
-not just the owning one), export shape. Graceful-failure paths confirmed:
-portrait upload without `CLOUDINARY_URL` returns a clean 502 without
-crashing the process; `/backup` and `/restore` return clean 400s when
-Drive isn't configured; `/restore` requires `confirm: true`.
+## Verified so far (this point in time)
 
-**Frontend, in a real Chrome session (once the browser extension
-connection was fixed — see below):** gallery empty state, card creation
-and rendering (collection numbers, species tag, scrim, accent bar/dot all
-correct), the combined detail+editor view at true desktop width (portrait
-column + field sections + relationships), autosave on name/text/number/
-color/select fields confirmed via direct API checks after each save (no
-Save button, no full-view re-render stealing focus), accent colour
-propagating live to the name underline and portrait accent bar without a
-page reload, all three themes (Noir/Atlas/Archive) applying correct
-tokens, tag add via the gallery's "+ tag" input and the resulting filter
-chip row, the Add Field modal (including the Select-type options
-textarea) and Manage Fields modal (reorder, rename — both confirmed
-against a real running app, not just curl), a full relationship
-create → assign-target → assign-label round trip against two real
-characters, and the Backup & restore modal's copy/disabled-state logic
-when Drive/Cloudinary are unconfigured. Found and fixed one real bug this
-way: "Download snapshot" was navigating the tab to raw JSON instead of
-downloading a file — now does a proper client-side Blob download, matching
-the design.
+**Projects migration**: verified against a real downloaded copy of the
+production database — exact pre/post character/field counts for both owners,
+zero orphaned `character_values`, double-running the migration confirmed
+idempotency (no reversion regression), the cross-project relationship trigger
+confirmed to reject a forged insert, a forged/guessed `dramatis_project`
+cookie confirmed to 404 rather than leak another owner's project, and the
+whole-household `build_export()`/Drive-backup path (previously a real crash
+risk — see "Known gaps" below) confirmed working post-migration.
 
-**Chrome extension connection:** initially wouldn't connect at all
-(`tabs_context_mcp` timed out repeatedly). Root cause was Arc — the
-extension was also installed there and the two were conflicting; removing
-it from Arc and using Chrome exclusively fixed it immediately, no restart
-needed.
+**Document import**: verified end-to-end against a real dossier through the
+live Anthropic API (not mocked) — extraction matched a canonical worked
+example almost exactly (6 characters, correct field reuse against the
+project's existing fields, 7 relationships with correct auto-inverse roles
+and categories), commit created everything correctly, re-import correctly
+updated rather than duplicated catalog-role relationships (matched by role
+key). `ANTHROPIC_API_KEY`-unset path confirmed to degrade cleanly: `/status`
+reports `import_configured: false`, extraction 400s with a clear message, rest
+of the app entirely unaffected.
 
-**Not independently re-verified after the fixes above** (low risk, but
-say so): the `updateCharCount()` staleness fix on entering detail view,
-and the `STATE.characters` refresh added to `goDetail()` for the
-relationship-dropdown/collection-number staleness fix — both were code
-review fixes made *during* this session's testing, applied and
-syntax-checked but not re-clicked-through afterward.
+**One real bug found post-deploy, fixed same day**: the import view's file
+dropzone (`<label class="import-dropzone">`) never got a `display` mode set —
+`<label>` defaults to `display: inline`, so the dashed box collapsed to a
+sliver and its text spilled out beside it instead of centering inside a
+proper full-width box. Fixed (`display: block`), frontend-only so no restart
+needed. Caught via the owner's own screenshot after first live use, not
+caught in this session's own (backend-focused) testing — worth remembering
+that CSS layout bugs like this don't show up in curl/API-level verification.
 
-## Known gaps — needs the owner's follow-up
+## Known gaps / accepted limitations — needs the owner's follow-up (or doesn't)
 
-1. ~~Cloudinary untested live~~ — verified 2026-07-19 against the real
-   `fergd` Cloudinary account (reused from zamak-ledger, separate `dramatis/`
-   folder namespace, no collision — confirmed zero cross-contamination).
-   Full lifecycle confirmed against the live API: upload, second image
-   correctly not becoming primary, deleting the primary promotes the next
-   image, character delete cascades to destroy all Cloudinary assets (not
-   just DB rows — confirmed via a direct fetch of the deleted asset's URL
-   returning 404), zero orphaned resources left behind afterward (checked
-   via `cloudinary.api.resources`). **Found and fixed a real bug in the
-   process:** `derived_url()` in `cloudinary_images.py` was building plain
-   `http://` URLs — `cloudinary.CloudinaryImage(...).build_url()` doesn't
-   default to secure, and nothing was passing `secure=True`. All API
-   responses (card thumbnails, detail images, thumbnail strip) were
-   serving over http despite the raw stored column correctly holding
-   Cloudinary's own `secure_url` from upload. Fixed by adding
-   `secure=True` to the `build_url()` call; re-verified both derived URLs
-   now return `https://` and are reachable.
-2. **Google Drive backup deliberately deferred by the owner** (2026-07-19)
-   — not an oversight, a decision: portraits already live durably in
-   Cloudinary, and the remaining text data (fields/characters/
-   relationships) is low-stakes enough that automated Drive backup isn't
-   worth the setup right now. The code path is fully built and its
-   failure mode is verified safe (clean 400s when unconfigured, app never
-   blocks), so this can be turned on later at any time by following the
-   README's Google Drive setup section — no code changes needed, just
-   `.env` values and the one-time `--authorize` step.
-3. ~~Not yet a git repository~~ — done, see below.
-3. ~~True mobile-width layout wasn't visually confirmed~~ — confirmed in
-   a follow-up session at ~606px width (the closest this environment's
-   `resize_window` would reliably give): header wraps cleanly with no
-   overflow, the detail view's two-column layout collapses to one column,
-   and the Identity field grid auto-fits down to fewer columns rather
-   than a fixed breakpoint (same `auto-fit, minmax(160px,1fr)` behavior
-   the design itself uses). Not tested below ~600px or on a real device —
-   worth a quick real-phone glance before considering this fully done,
-   but the underlying CSS techniques are standard enough that risk here
-   is low.
+1. **Google Drive backup — deliberately deferred**, not an oversight (owner's
+   call, 2026-07-19, reconfirmed since): portraits already live durably in
+   Cloudinary; the remaining text data isn't worth the OAuth setup right now.
+   Code path is fully built and safe when unconfigured. The Projects
+   migration changed `/export`'s JSON shape (now `{"projects": [...]}`
+   wrapping each project's fields/characters, instead of flat top-level
+   `fields`/`characters` arrays) — relevant only if ever restoring an export
+   downloaded before 2026-08-08, which would need reshaping first.
+2. **Custom (non-catalog) relationship re-import can near-duplicate.**
+   Catalog-role relationships dedupe perfectly on re-import (identity is the
+   stable role key). A *custom* role's identity is its own label text, which
+   an LLM can phrase slightly differently between two independent extraction
+   calls on the same document (e.g. "Recipient" vs. "Recipient of
+   transmission") — each phrasing hashes to a different dedupe key by design,
+   since the schema deliberately supports multiple distinct custom ties per
+   pair. Confirmed via live re-import testing; the review screen surfaces the
+   near-duplicate visibly before commit either way, so it's a minor
+   annoyance rather than silent data corruption. Not planned to be "fixed"
+   unless it becomes a real nuisance in practice — there's no obvious fix
+   that doesn't sacrifice the multiple-custom-ties-per-pair feature.
+3. **True mobile-width layout** only ever spot-checked at ~606px (this
+   environment's narrowest reliable `resize_window`), never on an actual
+   phone or below ~600px. Standard CSS techniques (`auto-fit`/`auto-fill`
+   grids) used throughout, so risk is low, but unconfirmed.
+4. **Secret-handling friction, worth remembering for next time**: Claude
+   Code's own safety classifier blocked an attempt to programmatically copy
+   the `ANTHROPIC_API_KEY` value between files (fetching it from
+   zamak-ledger's systemd unit into a local `.env` for testing) — the owner
+   added it to `.env` by hand both locally and on backupbox instead. Expect
+   the same friction for any future secret that needs moving between
+   files/hosts; hand it to the owner as an instruction rather than trying to
+   pipe the value through tool calls.
 
 ## Outstanding / possible next steps
 
-- [ ] Live-test Cloudinary upload/replace/delete with a real account —
-      the portrait drop zone and thumbnail strip were never exercised
-      with a real image this session (no credentials available).
-- [ ] Google Drive backup — deliberately deferred (see "Known gaps"
-      above), not currently planned. Revisit if the text data ever feels
-      worth automated backup; the code is ready, just needs `.env` +
-      `--authorize`.
-- [x] ~~`git init`, first commit~~ — done 2026-07-19, root commit
-      `42e1256` on `main`, pushed to `github.com/fergd/dramatis` (public).
-- [x] ~~Deploy to backupbox~~ — done 2026-07-19, see "Deployed and live"
-      above. Confirmed via the real `tailscale serve` HTTPS URL, not just
-      localhost, per the deploy-loop guidance in §12/README.
+- [ ] Google Drive backup — deliberately deferred, not currently planned.
+      Revisit if the text data ever feels worth automated backup; the code
+      is ready, just needs `.env` + `--authorize`.
+- [ ] Real-phone check of the mobile layout below ~600px.
+- [ ] Nothing else from the Projects & Document Import spec is outstanding —
+      both Part A (Projects) and Part B (Import) are shipped and verified.
+- [x] ~~Multi-project support~~ — shipped 2026-08-08.
+- [x] ~~Claude-assisted document import~~ — shipped 2026-08-08.
+- [x] ~~Reciprocal, catalog-based relationships + map~~ — shipped earlier
+      in the 2026-08-08 working session, before Projects/Import.
+- [x] ~~Per-person login~~, ~~5-theme palette~~, ~~built-in field
+      delete/type-edit~~ — all shipped prior to this point in time.
+
+---
+
+<details>
+<summary>Original 2026-07-19 handoff (historical — kept for the deploy/
+Cloudinary/Chrome-extension troubleshooting notes, which are still accurate)</summary>
+
+**Point in time:** 2026-07-19. Built from `BRIEF.md` plus a high-fidelity
+design handoff (`Dramatis.dc.html` + its own `README.md`, bundled as
+`Character Profile Builder.zip`), visually verified end-to-end in a real
+Chrome session, live-tested against a real Cloudinary account, and deployed
+and running on backupbox.
+
+**Memory blocker cleared first** — backupbox was still on `graphical.target`
+with 185MB free RAM and swap 100% full; switched to `multi-user.target` and
+rebooted (confirmed all of the owner's actual workloads — zamak-ledger, the
+`photos-bu.sh`/`videos-bu.sh` cron backups, docker, Plex, tailscaled — run
+under `multi-user.target`, not `graphical.target`; only desktop-only units
+like `gdm` dropped). Now 1.8GB free, swap empty.
+
+**One deploy bug hit and fixed:** the systemd unit's first version bound
+uvicorn to `0.0.0.0:8421` — but `tailscale serve --https=8421` makes
+`tailscaled` itself bind port 8421 *on the tailscale interface* to terminate
+HTTPS there before proxying to `127.0.0.1:8421`. Binding `0.0.0.0` includes
+that same interface, so uvicorn and tailscaled fought over the same port and
+the service sat in an `activating (auto-restart)` crash loop. Fixed by
+binding uvicorn to `127.0.0.1` only.
+
+`sudo` was required for `systemctl daemon-reload`/`enable`/`restart` and for
+the `multi-user.target` reboot — those needed the owner to run the commands
+directly (password not available/appropriate to automate). Everything else
+— `git clone`, venv setup, `.env`, and `tailscale serve` configuration itself
+— needed no elevated privilege. This pattern held for every deploy since.
+
+**Cloudinary**, live-tested against the real `fergd` account (reused from
+zamak-ledger, separate `dramatis/` folder namespace, no collision): full
+lifecycle confirmed — upload, second image correctly not becoming primary,
+deleting the primary promotes the next image, character delete cascades to
+destroy all Cloudinary assets, zero orphaned resources left behind. **Found
+and fixed a real bug:** `derived_url()` was building plain `http://` URLs —
+`cloudinary.CloudinaryImage(...).build_url()` doesn't default to secure.
+Fixed with `secure=True`.
+
+**Chrome extension connection:** initially wouldn't connect at all
+(`tabs_context_mcp` timed out repeatedly). Root cause was Arc — the
+extension was also installed there and the two were conflicting; removing it
+from Arc and using Chrome exclusively fixed it immediately, no restart
+needed. (Still relevant: in the 2026-08-08 session, the extension was not
+connected at all and headless Chrome CLI dump-dom also hung repeatedly in
+this sandboxed environment — verification that session leaned on curl/
+TestClient-level API testing plus static code review instead of a real
+browser, which is *why* the dropzone CSS bug above wasn't caught until the
+owner's own first live use.)
+
+</details>
