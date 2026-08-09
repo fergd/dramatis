@@ -219,6 +219,37 @@ main { padding: 0 20px 70px; }
 .map-legend-row { display: flex; align-items: center; gap: 8px; font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
 .map-legend-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
 
+/* ---------- import view ---------- */
+.import-shell { max-width: 900px; margin: 0 auto; padding: 20px 20px 90px; animation: drin .3s ease both; }
+.import-shell h1 { font-family: var(--hf); font-size: 28px; font-style: italic; margin: 0 0 6px; }
+.import-shell .lede { color: var(--muted); font-size: 13.5px; margin: 0 0 26px; line-height: 1.6; }
+.import-dropzone { border: 1px dashed var(--line); border-radius: 14px; padding: 40px 20px; text-align: center; background: var(--panel); cursor: pointer; }
+.import-dropzone:hover { border-color: var(--accent); }
+.import-dropzone .hint { font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: var(--muted); margin-top: 8px; }
+.import-or { text-align: center; font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .1em; margin: 18px 0; }
+.import-pastebox { width: 100%; padding: 12px; background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; font-size: 13.5px; font-family: 'IBM Plex Mono', monospace; line-height: 1.5; min-height: 160px; }
+.import-loading { text-align: center; padding: 60px 20px; color: var(--muted); }
+.import-section { margin: 30px 0; }
+.import-section h2 { font-family: 'IBM Plex Mono', monospace; font-size: 11px; text-transform: uppercase; letter-spacing: .12em; color: var(--accent); margin: 0 0 14px; padding-bottom: 8px; border-bottom: 1px solid var(--line); font-weight: 500; }
+.import-item { display: flex; gap: 12px; align-items: flex-start; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; margin-bottom: 10px; }
+.import-item input[type=checkbox] { margin-top: 3px; flex: none; width: 16px; height: 16px; accent-color: var(--accent); }
+.import-item-body { flex: 1; min-width: 0; }
+.import-item-title { display: flex; align-items: center; gap: 8px; font-size: 14.5px; font-weight: 600; margin-bottom: 4px; }
+.import-badge { font-family: 'IBM Plex Mono', monospace; font-size: 9.5px; text-transform: uppercase; letter-spacing: .06em; padding: 2px 8px; border-radius: 20px; background: var(--chip); color: var(--muted); }
+.import-badge.new { color: var(--green); }
+.import-badge.existing { color: var(--amber); }
+.import-field-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; font-size: 13px; border-top: 1px solid var(--line); }
+.import-field-row:first-of-type { border-top: none; }
+.import-field-row label { display: flex; align-items: center; gap: 6px; flex: none; width: 160px; color: var(--muted); font-size: 12px; }
+.import-field-row .field-preview { flex: 1; color: var(--ink); white-space: pre-wrap; overflow: hidden; text-overflow: ellipsis; max-height: 4.8em; }
+.import-field-row .field-current { flex: 1; color: var(--muted); font-size: 11.5px; font-style: italic; }
+.import-meta-value { flex: 1; padding: 7px 10px; background: var(--panel2); border: 1px solid var(--line); border-radius: 7px; font-size: 13px; }
+.import-newfield-row { display: flex; align-items: center; gap: 8px; }
+.import-newfield-row input[type=text] { flex: 1; padding: 7px 10px; background: var(--panel2); border: 1px solid var(--line); border-radius: 7px; font-size: 13px; }
+.import-newfield-row select { padding: 7px 8px; background: var(--panel2); border: 1px solid var(--line); border-radius: 7px; font-size: 12px; }
+.import-actions { display: flex; gap: 12px; justify-content: flex-end; margin-top: 30px; position: sticky; bottom: 0; background: var(--bg); padding: 16px 0; }
+.import-empty-note { color: var(--muted); font-size: 13px; font-style: italic; }
+
 @media (max-width: 640px) {
   header { padding: 11px 14px; }
   #search-input { width: 100%; order: 4; }
@@ -440,13 +471,17 @@ function drawProjectPopover() {
     </button>`).join('') + `
     <div class="pp-divider"></div>
     <button class="pp-action" id="pp-new">+ New project</button>
-    <button class="pp-action" id="pp-settings">Project settings…</button>`;
+    <button class="pp-action" id="pp-settings">Project settings…</button>
+    <button class="pp-action" id="pp-import" ${STATE.status && !STATE.status.import_configured ? 'disabled title="Not configured — add ANTHROPIC_API_KEY"' : ''}>Import document…</button>`;
 
   pop.querySelectorAll('.pp-item').forEach(btn => {
     btn.addEventListener('click', () => switchProject(Number(btn.dataset.id)));
   });
   document.getElementById('pp-new').addEventListener('click', () => { closeProjectPopover(); openNewProjectModal(); });
   document.getElementById('pp-settings').addEventListener('click', () => { closeProjectPopover(); openProjectSettingsModal(); });
+  const importBtn = document.getElementById('pp-import');
+  if (STATE.status && !STATE.status.import_configured) importBtn.style.opacity = '.5';
+  importBtn.addEventListener('click', () => { closeProjectPopover(); goImport(); });
 }
 
 async function switchProject(id) {
@@ -1652,6 +1687,248 @@ function wireMapInteractions() {
       evt.preventDefault();
     });
   });
+}
+
+// ---------------------------------------------------------------- import view
+
+const BUILTIN_META_LABELS = { setting: 'Setting / Location', form: 'Form', viewpoint: 'Viewpoint', logline: 'Logline', notes: 'Notes' };
+
+function roleLabelForKey(key) {
+  const r = (STATE.relationshipRoles && STATE.relationshipRoles.roles || []).find(x => x.key === key);
+  return r ? r.label : key;
+}
+
+async function goImport() {
+  STATE.view = 'import';
+  STATE.selectedId = null;
+  STATE.selectedDetail = null;
+  STATE.importState = { stage: 'upload', pastedText: '', file: null, proposal: null };
+  renderImportView();
+}
+
+function renderImportView() {
+  const s = STATE.importState;
+  if (s.stage === 'upload') return renderImportUpload();
+  if (s.stage === 'loading') {
+    document.getElementById('main-content').innerHTML = `<div class="import-shell"><div class="import-loading">Reading the document and extracting characters…</div></div>`;
+    return;
+  }
+  renderImportReview();
+}
+
+function renderImportUpload() {
+  const s = STATE.importState;
+  const main = document.getElementById('main-content');
+  main.innerHTML = `
+    <div class="import-shell">
+      <h1>Import a document</h1>
+      <p class="lede">Upload a dossier and Claude extracts project details, characters, fields, and relationships into an editable preview — nothing is saved until you confirm. Importing into <strong>${escapeHtml(STATE.project.title)}</strong>.</p>
+      <label class="import-dropzone" id="import-dropzone">
+        <div id="import-dropzone-text">Click to choose a file</div>
+        <div class="hint">.md, .txt, .docx, or .pdf</div>
+        <input type="file" id="import-file-input" accept=".md,.txt,.docx,.pdf" style="display:none">
+      </label>
+      <div class="import-or">or paste text</div>
+      <textarea class="import-pastebox" id="import-paste" placeholder="Paste your dossier text here…"></textarea>
+      <div class="import-actions">
+        <button class="btn-line" id="import-cancel">Cancel</button>
+        <button class="btn-solid" id="import-extract-btn">Extract</button>
+      </div>
+    </div>`;
+  document.getElementById('import-cancel').addEventListener('click', goGrid);
+  document.getElementById('import-file-input').addEventListener('change', e => {
+    if (e.target.files.length) {
+      s.file = e.target.files[0];
+      document.getElementById('import-dropzone-text').textContent = s.file.name;
+    }
+  });
+  document.getElementById('import-paste').addEventListener('input', e => { s.pastedText = e.target.value; });
+  document.getElementById('import-extract-btn').addEventListener('click', runImportExtract);
+}
+
+async function runImportExtract() {
+  const s = STATE.importState;
+  if (!s.file && !(s.pastedText && s.pastedText.trim())) { alert('Choose a file or paste some text first'); return; }
+  s.stage = 'loading';
+  renderImportView();
+  try {
+    const fd = new FormData();
+    if (s.file) fd.append('file', s.file);
+    else fd.append('text', s.pastedText);
+    const proposal = await api('POST', '/import/extract', fd);
+    const project = await api('GET', `/projects/${STATE.project.id}`);
+    s.projectMetaCurrent = {};
+    (project.meta || []).forEach(m => { s.projectMetaCurrent[m.key] = m.value; });
+    s.proposal = proposal;
+    initImportReviewState(proposal);
+    s.stage = 'review';
+  } catch (e) {
+    alert('Extraction failed: ' + e.message);
+    s.stage = 'upload';
+  }
+  renderImportView();
+}
+
+function initImportReviewState(proposal) {
+  const s = STATE.importState;
+  s.metaApply = {};
+  s.metaValue = {};
+  Object.entries(proposal.project_meta || {}).forEach(([k, v]) => { s.metaValue[k] = v; });
+  s.charInclude = (proposal.characters || []).map(() => true);
+  s.charFieldApply = (proposal.characters || []).map(c => {
+    const apply = {};
+    Object.keys(c.fields || {}).forEach(label => {
+      const current = (c.current_fields || {})[label];
+      apply[label] = !current; // fill-blank default — never auto-overwrite a non-empty value
+    });
+    return apply;
+  });
+  s.newFieldInclude = (proposal.new_fields || []).map(() => true);
+  s.newFieldLabel = (proposal.new_fields || []).map(f => f.label);
+  s.newFieldType = (proposal.new_fields || []).map(f => TYPE_LABELS[f.type] ? f.type : 'text');
+  s.relInclude = (proposal.relationships || []).map(() => true);
+}
+
+function renderImportReview() {
+  const s = STATE.importState;
+  const p = s.proposal;
+  const main = document.getElementById('main-content');
+
+  const metaKeys = Object.keys(p.project_meta || {});
+  const metaHTML = metaKeys.length === 0 ? `<p class="import-empty-note">No project metadata proposed.</p>` : metaKeys.map(key => {
+    const current = s.projectMetaCurrent[key] || '';
+    const label = BUILTIN_META_LABELS[key] || key;
+    return `
+    <div class="import-item">
+      <input type="checkbox" data-role="meta-apply" data-key="${escapeHtml(key)}" ${s.metaApply[key] !== false ? 'checked' : ''}>
+      <div class="import-item-body">
+        <div class="import-item-title">${escapeHtml(label)}${current ? '<span class="import-badge existing">would overwrite</span>' : ''}</div>
+        <input type="text" class="import-meta-value" data-role="meta-value" data-key="${escapeHtml(key)}" value="${escapeHtml(s.metaValue[key] || '')}">
+        ${current ? `<div class="import-field-row"><span class="field-current">Current: ${escapeHtml(current)}</span></div>` : ''}
+      </div>
+    </div>`;
+  }).join('');
+
+  const charsHTML = (p.characters || []).length === 0 ? `<p class="import-empty-note">No characters proposed.</p>` : p.characters.map((c, i) => {
+    const fieldsHTML = Object.entries(c.fields || {}).map(([label, value]) => {
+      const current = (c.current_fields || {})[label];
+      const applyChecked = s.charFieldApply[i][label] !== false;
+      return `
+      <div class="import-field-row">
+        <label><input type="checkbox" data-role="char-field-apply" data-ci="${i}" data-label="${escapeHtml(label)}" ${applyChecked ? 'checked' : ''}> ${escapeHtml(label)}</label>
+        <span class="field-preview">${escapeHtml(String(value))}</span>
+        ${current ? `<span class="field-current">was: ${escapeHtml(String(current))}</span>` : ''}
+      </div>`;
+    }).join('');
+    return `
+    <div class="import-item">
+      <input type="checkbox" data-role="char-include" data-ci="${i}" ${s.charInclude[i] ? 'checked' : ''}>
+      <div class="import-item-body">
+        <div class="import-item-title">${escapeHtml(c.name || 'Unnamed')}<span class="import-badge ${c.match === 'existing' ? 'existing' : 'new'}">${c.match === 'existing' ? 'matches existing' : 'new'}</span></div>
+        ${fieldsHTML}
+      </div>
+    </div>`;
+  }).join('');
+
+  const newFieldsHTML = (p.new_fields || []).length === 0 ? `<p class="import-empty-note">No new fields proposed.</p>` : p.new_fields.map((f, i) => `
+    <div class="import-item">
+      <input type="checkbox" data-role="newfield-include" data-fi="${i}" ${s.newFieldInclude[i] ? 'checked' : ''}>
+      <div class="import-item-body">
+        <div class="import-newfield-row">
+          <input type="text" data-role="newfield-label" data-fi="${i}" value="${escapeHtml(s.newFieldLabel[i])}">
+          <select data-role="newfield-type" data-fi="${i}">
+            ${Object.keys(TYPE_LABELS).map(t => `<option value="${t}" ${t === s.newFieldType[i] ? 'selected' : ''}>${TYPE_LABELS[t]}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+    </div>`).join('');
+
+  const relsHTML = (p.relationships || []).length === 0 ? `<p class="import-empty-note">No relationships proposed.</p>` : p.relationships.map((r, i) => {
+    const roleLabel = r.role_key === 'custom' ? (r.custom_label || 'Related') : roleLabelForKey(r.role_key);
+    return `
+    <div class="import-item">
+      <input type="checkbox" data-role="rel-include" data-ri="${i}" ${s.relInclude[i] ? 'checked' : ''}>
+      <div class="import-item-body">
+        <div class="import-item-title">${escapeHtml(r.from || '')} <span style="color:var(--muted);font-weight:400">&rarr;</span> ${escapeHtml(r.to || '')}</div>
+        <div class="import-field-row"><span class="field-preview">${escapeHtml(roleLabel)} · ${escapeHtml(r.category || 'Other')}</span></div>
+      </div>
+    </div>`;
+  }).join('');
+
+  main.innerHTML = `
+    <div class="import-shell">
+      <h1>Review import</h1>
+      <p class="lede">Nothing is saved yet — uncheck anything you don't want, edit values inline, then confirm.</p>
+      <div class="import-section"><h2>Project metadata</h2>${metaHTML}</div>
+      <div class="import-section"><h2>Characters</h2>${charsHTML}</div>
+      <div class="import-section"><h2>New fields</h2>${newFieldsHTML}</div>
+      <div class="import-section"><h2>Relationships</h2>${relsHTML}</div>
+      <div class="import-actions">
+        <button class="btn-line" id="import-back">Cancel</button>
+        <button class="btn-solid" id="import-commit-btn">Confirm import</button>
+      </div>
+    </div>`;
+
+  document.getElementById('import-back').addEventListener('click', goGrid);
+  main.querySelectorAll('[data-role=meta-apply]').forEach(el => el.addEventListener('change', e => { s.metaApply[e.target.dataset.key] = e.target.checked; }));
+  main.querySelectorAll('[data-role=meta-value]').forEach(el => el.addEventListener('input', e => { s.metaValue[e.target.dataset.key] = e.target.value; }));
+  main.querySelectorAll('[data-role=char-include]').forEach(el => el.addEventListener('change', e => { s.charInclude[Number(e.target.dataset.ci)] = e.target.checked; }));
+  main.querySelectorAll('[data-role=char-field-apply]').forEach(el => el.addEventListener('change', e => {
+    s.charFieldApply[Number(e.target.dataset.ci)][e.target.dataset.label] = e.target.checked;
+  }));
+  main.querySelectorAll('[data-role=newfield-include]').forEach(el => el.addEventListener('change', e => { s.newFieldInclude[Number(e.target.dataset.fi)] = e.target.checked; }));
+  main.querySelectorAll('[data-role=newfield-label]').forEach(el => el.addEventListener('input', e => { s.newFieldLabel[Number(e.target.dataset.fi)] = e.target.value; }));
+  main.querySelectorAll('[data-role=newfield-type]').forEach(el => el.addEventListener('change', e => { s.newFieldType[Number(e.target.dataset.fi)] = e.target.value; }));
+  main.querySelectorAll('[data-role=rel-include]').forEach(el => el.addEventListener('change', e => { s.relInclude[Number(e.target.dataset.ri)] = e.target.checked; }));
+
+  document.getElementById('import-commit-btn').addEventListener('click', runImportCommit);
+}
+
+async function runImportCommit() {
+  const s = STATE.importState;
+  const p = s.proposal;
+  const body = { project_meta: [], new_fields: [], characters: [], relationships: [] };
+
+  Object.keys(p.project_meta || {}).forEach(key => {
+    if (s.metaApply[key] === false) return;
+    body.project_meta.push({ key, value: s.metaValue[key] || '' });
+  });
+
+  const includedNames = new Set();
+  (p.characters || []).forEach((c, i) => {
+    if (!s.charInclude[i]) return;
+    includedNames.add((c.name || '').trim().toLowerCase());
+    const values = {};
+    Object.entries(c.fields || {}).forEach(([label, value]) => {
+      if (s.charFieldApply[i][label] === false) return;
+      values[label] = value;
+    });
+    body.characters.push({ name: c.name, match: c.match, existing_id: c.existing_id, values });
+  });
+
+  (p.new_fields || []).forEach((f, i) => {
+    if (!s.newFieldInclude[i]) return;
+    body.new_fields.push({ label: s.newFieldLabel[i], type: s.newFieldType[i], section: 'Custom' });
+  });
+
+  (p.relationships || []).forEach((r, i) => {
+    if (!s.relInclude[i]) return;
+    if (!includedNames.has((r.from || '').trim().toLowerCase()) || !includedNames.has((r.to || '').trim().toLowerCase())) return;
+    body.relationships.push({
+      from_name: r.from, to_name: r.to, role: r.role_key,
+      custom_label: r.custom_label, custom_inverse_label: r.custom_inverse_label, category: r.category,
+    });
+  });
+
+  try {
+    await api('POST', '/import/commit', body);
+  } catch (e) {
+    alert('Import failed: ' + e.message);
+    return;
+  }
+  STATE.fields = await api('GET', '/fields');
+  STATE.projects = await api('GET', '/projects');
+  await goGrid();
 }
 
 // ---------------------------------------------------------------- modal: add field

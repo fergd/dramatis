@@ -31,7 +31,7 @@ from dotenv import load_dotenv
 load_dotenv()  # must run before cloudinary_images imports the cloudinary SDK,
                 # which auto-configures from CLOUDINARY_URL at import time
 
-from fastapi import Depends, FastAPI, File, HTTPException, Request, Response, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -39,6 +39,7 @@ from pydantic import BaseModel
 
 import cloudinary_images
 import drive_backup
+import import_extract
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("dramatis")
@@ -224,6 +225,10 @@ def _check_relationship_catalog_integrity():
 
 
 _check_relationship_catalog_integrity()
+
+# label -> catalog key, case-insensitive — used only to resolve document-import
+# extraction output (Claude returns catalog role LABELS, e.g. "Child", not keys).
+ROLE_LABEL_TO_KEY = {r["label"].lower(): key for key, r in RELATIONSHIP_ROLES.items()}
 
 
 def relationship_role_label(role_key: str, custom_label: Optional[str]) -> str:
@@ -832,6 +837,40 @@ class RelationshipUpdate(BaseModel):
 
 class RestoreIn(BaseModel):
     confirm: bool = False
+
+
+class ImportProjectMetaIn(BaseModel):
+    key: str
+    value: str = ""
+
+
+class ImportNewFieldIn(BaseModel):
+    label: str
+    type: str = "text"
+    section: Optional[str] = "Custom"
+
+
+class ImportCharacterIn(BaseModel):
+    name: str
+    match: str  # "new" | "existing"
+    existing_id: Optional[int] = None
+    values: Optional[dict] = None  # {field_label: value} — label, not key; resolved at commit time
+
+
+class ImportRelationshipIn(BaseModel):
+    from_name: str
+    to_name: str
+    role: str  # catalog key, or "custom" — matches RelationshipIn's shape
+    custom_label: Optional[str] = None
+    custom_inverse_label: Optional[str] = None
+    category: Optional[str] = None
+
+
+class ImportCommitIn(BaseModel):
+    project_meta: Optional[list[ImportProjectMetaIn]] = None
+    new_fields: Optional[list[ImportNewFieldIn]] = None
+    characters: Optional[list[ImportCharacterIn]] = None
+    relationships: Optional[list[ImportRelationshipIn]] = None
 
 
 # ---------------------------------------------------------------------------
@@ -1954,6 +1993,160 @@ def delete_field(field_id: int, project_id: int = Depends(get_current_project)):
 
 
 # ---------------------------------------------------------------------------
+# Document import — Claude-assisted extraction into a reviewable preview
+# (POST /import/extract, writes nothing) that the author explicitly commits
+# (POST /import/commit). Match resolution is a backend concern (see B3 in the
+# Projects & Import spec): Claude's own "match" guess is discarded and
+# recomputed here from the real character list, not trusted blindly.
+# ---------------------------------------------------------------------------
+
+def _resolve_import_relationship_role(raw_role: str, custom_from_to: Optional[str], custom_to_from: Optional[str]) -> dict:
+    """Claude returns catalog role LABELS (e.g. "Child") or the literal string
+    "custom" per the extraction prompt — never a catalog key. Resolves to the
+    same {role_key, custom_label, custom_inverse_label} shape the frontend's
+    manual relationship editor already sends to POST /relationships, so the
+    review screen and commit path can reuse that exact wire format."""
+    if raw_role == "custom":
+        label = (custom_from_to or "").strip() or "Related"
+        return {"role_key": "custom", "custom_label": label, "custom_inverse_label": (custom_to_from or "").strip() or label}
+    resolved_key = ROLE_LABEL_TO_KEY.get((raw_role or "").strip().lower())
+    if resolved_key:
+        return {"role_key": resolved_key, "custom_label": None, "custom_inverse_label": None}
+    # Claude used a role phrase outside the catalog — treat as custom rather
+    # than silently dropping the relationship.
+    label = (raw_role or "").strip() or "Related"
+    return {"role_key": "custom", "custom_label": label, "custom_inverse_label": label}
+
+
+@app.post("/import/extract")
+async def import_extract_route(
+    file: Optional[UploadFile] = File(None),
+    text: Optional[str] = Form(None),
+    owner: str = Depends(get_current_owner),
+    project_id: int = Depends(get_current_project),
+):
+    if not import_extract.is_configured():
+        raise HTTPException(status_code=400, detail="Document import is not configured (ANTHROPIC_API_KEY not set)")
+
+    if file is not None:
+        raw_bytes = await file.read()
+        try:
+            doc_text = import_extract.extract_text(file.filename or "dossier.txt", raw_bytes)
+        except RuntimeError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+    elif text is not None and text.strip():
+        doc_text = text
+    else:
+        raise HTTPException(status_code=400, detail="Provide a file or pasted text")
+
+    conn = get_conn()
+    try:
+        existing_field_labels = [f["label"] for f in _all_fields(conn, project_id)]
+        existing_char_rows = conn.execute(
+            "SELECT id, name FROM characters WHERE project_id = ? ORDER BY id", (project_id,)
+        ).fetchall()
+        field_label_by_key = {f["key"]: f["label"] for f in _all_fields(conn, project_id)}
+    finally:
+        conn.close()
+    existing_names = [r["name"] for r in existing_char_rows if r["name"]]
+
+    try:
+        proposal = import_extract.extract_dossier(doc_text, existing_field_labels, existing_names, RELATIONSHIP_ROLES)
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+    # Match resolution + current_fields, by real name lookup — not Claude's guess.
+    conn = get_conn()
+    try:
+        name_to_row = {(r["name"] or "").strip().lower(): r for r in existing_char_rows}
+        for c in proposal["characters"]:
+            match_row = name_to_row.get((c.get("name") or "").strip().lower())
+            if match_row:
+                c["match"] = "existing"
+                c["existing_id"] = match_row["id"]
+                raw_values = _character_values(conn, match_row["id"])
+                c["current_fields"] = {field_label_by_key.get(k, k): v for k, v in raw_values.items() if v}
+            else:
+                c["match"] = "new"
+                c["existing_id"] = None
+                c["current_fields"] = {}
+    finally:
+        conn.close()
+
+    for rel in proposal["relationships"]:
+        resolved = _resolve_import_relationship_role(
+            rel.get("role", ""), rel.get("custom_label_from_to"), rel.get("custom_label_to_from")
+        )
+        rel.update(resolved)
+        rel.setdefault("category", "Other")
+
+    return proposal
+
+
+@app.post("/import/commit", status_code=201)
+def import_commit(body: ImportCommitIn, owner: str = Depends(get_current_owner), project_id: int = Depends(get_current_project)):
+    conn = get_conn()
+    try:
+        for nf in (body.new_fields or []):
+            if not nf.label or not nf.label.strip():
+                continue
+            ftype = nf.type if nf.type in VALID_FIELD_TYPES else "text"
+            _create_field(conn, project_id, nf.label, ftype, None, nf.section or "Custom")
+
+        field_rows = conn.execute("SELECT key, label FROM fields WHERE project_id = ?", (project_id,)).fetchall()
+        key_by_label = {(r["label"] or "").strip().lower(): r["key"] for r in field_rows}
+
+        name_to_id = {}
+        for ch in (body.characters or []):
+            values_by_key = {}
+            for label, value in (ch.values or {}).items():
+                key = key_by_label.get((label or "").strip().lower())
+                if key is not None and value is not None:
+                    values_by_key[key] = value
+
+            if ch.match == "existing" and ch.existing_id:
+                row = _get_owned_character(conn, ch.existing_id, owner, project_id)
+                if not row:
+                    continue  # stale/foreign id — skip this character rather than fail the whole commit
+                character_id = row["id"]
+                _upsert_values(conn, character_id, row["project_id"], values_by_key)
+            else:
+                now = _now()
+                cur = conn.execute(
+                    "INSERT INTO characters (owner, project_id, name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                    (owner, project_id, (ch.name or "").strip(), now, now),
+                )
+                character_id = cur.lastrowid
+                conn.commit()
+                _upsert_values(conn, character_id, project_id, values_by_key)
+            name_to_id[(ch.name or "").strip().lower()] = character_id
+
+        for m in (body.project_meta or []):
+            conn.execute(
+                "UPDATE project_meta SET value = ? WHERE project_id = ? AND key = ?",
+                (m.value, project_id, m.key),
+            )
+        conn.commit()
+
+        relationships_created = 0
+        for rel in (body.relationships or []):
+            from_id = name_to_id.get((rel.from_name or "").strip().lower())
+            to_id = name_to_id.get((rel.to_name or "").strip().lower())
+            if from_id is None or to_id is None or from_id == to_id:
+                continue  # either character was rejected in review, or self-referential — skip, don't fail
+            _upsert_relationship(
+                conn, from_id, to_id, rel.role,
+                custom_label=rel.custom_label, custom_inverse_label=rel.custom_inverse_label,
+                category_override=rel.category,
+            )
+            relationships_created += 1
+    finally:
+        conn.close()
+    schedule_backup()
+    return {"committed": True, "characters": len(name_to_id), "relationships": relationships_created}
+
+
+# ---------------------------------------------------------------------------
 # Export / backup / restore / status
 # ---------------------------------------------------------------------------
 
@@ -2114,6 +2307,7 @@ def status(owner: str = Depends(get_current_owner), project_id: int = Depends(ge
         "cloudinary_configured": cloudinary_images.is_configured(),
         "drive_configured": drive_backup.is_configured(),
         "drive_authorized": drive_backup.is_authorized(),
+        "import_configured": import_extract.is_configured(),
         "last_backup_at": _last_backup_at,
         "last_backup_error": _last_backup_error,
         "counts": {"characters": char_count, "fields": field_count},
