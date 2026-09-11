@@ -304,3 +304,86 @@ BEGIN
     WHERE (SELECT project_id FROM characters WHERE id = NEW.character_id)
        != (SELECT project_id FROM locations WHERE id = NEW.location_id);
 END;
+
+-- ============================================================
+-- EVENTS — the Timeline. Deliberately no real-calendar system:
+-- date_text is a freeform display string ("Spring, Year 3", "Day
+-- 12") the author writes however their story's calendar works;
+-- sort_key is what actually orders the list (drag/move, not typed
+-- by hand) — see the /events/{id}/move endpoint in app.py.
+-- category is a small fixed catalog (EVENT_CATEGORY_COLORS in
+-- app.py), same color-coding mechanism as relationships' category.
+-- location_id is a single optional place the event happened —
+-- not a join table, since one location per event covers the
+-- common case and keeps this simple.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS events (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id    INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    title         TEXT NOT NULL DEFAULT '',
+    description   TEXT NOT NULL DEFAULT '',
+    date_text     TEXT NOT NULL DEFAULT '',
+    sort_key      REAL NOT NULL DEFAULT 0,
+    category      TEXT NOT NULL DEFAULT 'Other',
+    location_id   INTEGER REFERENCES locations(id) ON DELETE SET NULL,
+    created_at    TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at    TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_events_project ON events(project_id);
+CREATE INDEX IF NOT EXISTS idx_events_sort ON events(project_id, sort_key);
+CREATE INDEX IF NOT EXISTS idx_events_location ON events(location_id);
+
+-- ============================================================
+-- EVENT_CHARACTERS — who's linked to an event. Same shape/spirit
+-- as character_locations: directional, freeform role text
+-- ("Witness", "Instigator", blank = just "present"), not a
+-- reciprocal catalog.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS event_characters (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id      INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    character_id  INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+    role          TEXT NOT NULL DEFAULT '',
+    UNIQUE(event_id, character_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_event_characters_event ON event_characters(event_id);
+CREATE INDEX IF NOT EXISTS idx_event_characters_character ON event_characters(character_id);
+
+-- ============================================================
+-- Same defense-in-depth pattern as the other cross-table triggers
+-- above: an event's location, and an event_characters link, must
+-- always stay within one project.
+-- ============================================================
+CREATE TRIGGER IF NOT EXISTS trg_events_location_same_project_ins
+BEFORE INSERT ON events
+BEGIN
+    SELECT RAISE(ABORT, 'an event''s location must be in the same project')
+    WHERE NEW.location_id IS NOT NULL
+      AND (SELECT project_id FROM locations WHERE id = NEW.location_id) != NEW.project_id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_events_location_same_project_upd
+BEFORE UPDATE ON events
+BEGIN
+    SELECT RAISE(ABORT, 'an event''s location must be in the same project')
+    WHERE NEW.location_id IS NOT NULL
+      AND (SELECT project_id FROM locations WHERE id = NEW.location_id) != NEW.project_id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_event_characters_same_project_ins
+BEFORE INSERT ON event_characters
+BEGIN
+    SELECT RAISE(ABORT, 'event_characters must share a project')
+    WHERE (SELECT project_id FROM events WHERE id = NEW.event_id)
+       != (SELECT project_id FROM characters WHERE id = NEW.character_id);
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_event_characters_same_project_upd
+BEFORE UPDATE ON event_characters
+BEGIN
+    SELECT RAISE(ABORT, 'event_characters must share a project')
+    WHERE (SELECT project_id FROM events WHERE id = NEW.event_id)
+       != (SELECT project_id FROM characters WHERE id = NEW.character_id);
+END;

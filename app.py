@@ -142,6 +142,22 @@ CATEGORY_COLORS = {
 }
 RELATIONSHIP_CATEGORIES = list(CATEGORY_COLORS.keys())
 
+# Same fixed-color mechanism as CATEGORY_COLORS above, but a separate
+# catalog — event categories aren't relationship categories, and giving
+# them their own dict keeps the two vocabularies from drifting together
+# by coincidence (e.g. both happening to have an "Other").
+EVENT_CATEGORY_COLORS = {
+    "Birth": "#6b9d5c",
+    "Death": "#8a5a6b",
+    "Meeting": "#5b8ec9",
+    "Conflict": "#c86a5f",
+    "Discovery": "#c99a3a",
+    "Journey": "#4fa898",
+    "Political": "#9a7bc9",
+    "Other": "#8a8a8a",
+}
+EVENT_CATEGORIES = list(EVENT_CATEGORY_COLORS.keys())
+
 # The role catalog. Every asymmetric pair gets both directions as their
 # own selectable entries (e.g. both "employer" and "employee") even where
 # the owner's spec only wrote out one direction per row in prose — a role
@@ -861,6 +877,36 @@ class CharacterLocationUpdate(BaseModel):
     role: Optional[str] = ""
 
 
+class EventIn(BaseModel):
+    title: Optional[str] = ""
+    description: Optional[str] = ""
+    date_text: Optional[str] = ""
+    category: Optional[str] = "Other"
+    location_id: Optional[int] = None
+
+
+class EventUpdate(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    date_text: Optional[str] = None
+    category: Optional[str] = None
+    location_id: Optional[int] = None  # nullable; read via model_fields_set, same reasoning as LocationUpdate
+
+
+class EventMoveIn(BaseModel):
+    direction: str  # "up" | "down"
+
+
+class EventCharacterIn(BaseModel):
+    event_id: int
+    character_id: int
+    role: Optional[str] = ""
+
+
+class EventCharacterUpdate(BaseModel):
+    role: Optional[str] = ""
+
+
 class RestoreIn(BaseModel):
     confirm: bool = False
 
@@ -1073,6 +1119,7 @@ def _character_detail(conn: sqlite3.Connection, character_id: int) -> Optional[d
         "images": _character_images(conn, character_id),
         "relationships": _character_relationships(conn, character_id),
         "locations": _character_locations(conn, character_id),
+        "events": _character_events(conn, character_id),
     }
 
 
@@ -1188,6 +1235,7 @@ def _location_detail(conn: sqlite3.Connection, location_id: int) -> Optional[dic
         "children": [{"id": c["id"], "name": c["name"]} for c in children],
         "tags": _location_tags(conn, location_id),
         "characters": _location_characters(conn, location_id),
+        "events": _location_events(conn, location_id),
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
@@ -1205,17 +1253,85 @@ def _location_card(conn: sqlite3.Connection, row: sqlite3.Row, tags_by_loc: dict
     }
 
 
+# ---------------------------------------------------------------------------
+# Events — the Timeline. Fixed built-in fields (no per-project custom
+# fields), ordered by sort_key (see /events/{id}/move), linked to
+# characters via event_characters and to a single optional location.
+# ---------------------------------------------------------------------------
+
+def _get_owned_event(conn: sqlite3.Connection, event_id: int, project_id: int) -> Optional[sqlite3.Row]:
+    """Events are project-scoped only, no owner column — same reasoning as
+    _get_owned_location (see its docstring)."""
+    return conn.execute(
+        "SELECT * FROM events WHERE id = ? AND project_id = ?", (event_id, project_id)
+    ).fetchone()
+
+
+def _event_characters(conn: sqlite3.Connection, event_id: int) -> list:
+    rows = conn.execute(
+        "SELECT ec.id AS id, ec.role AS role, c.id AS character_id, c.name AS character_name "
+        "FROM event_characters ec JOIN characters c ON c.id = ec.character_id "
+        "WHERE ec.event_id = ? ORDER BY ec.id",
+        (event_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _character_events(conn: sqlite3.Connection, character_id: int) -> list:
+    rows = conn.execute(
+        "SELECT ec.id AS id, ec.role AS role, e.id AS event_id, e.title AS event_title, "
+        "e.date_text AS date_text, e.category AS category "
+        "FROM event_characters ec JOIN events e ON e.id = ec.event_id "
+        "WHERE ec.character_id = ? ORDER BY e.sort_key, e.id",
+        (character_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _location_events(conn: sqlite3.Connection, location_id: int) -> list:
+    rows = conn.execute(
+        "SELECT id, title, date_text, category FROM events WHERE location_id = ? ORDER BY sort_key, id",
+        (location_id,),
+    ).fetchall()
+    return [{"id": r["id"], "title": r["title"], "date_text": r["date_text"], "category": r["category"]} for r in rows]
+
+
+def _event_detail(conn: sqlite3.Connection, event_id: int) -> Optional[dict]:
+    row = conn.execute("SELECT * FROM events WHERE id = ?", (event_id,)).fetchone()
+    if not row:
+        return None
+    location = None
+    if row["location_id"] is not None:
+        l = conn.execute("SELECT id, name FROM locations WHERE id = ?", (row["location_id"],)).fetchone()
+        if l:
+            location = {"id": l["id"], "name": l["name"]}
+    return {
+        "id": row["id"],
+        "project_id": row["project_id"],
+        "title": row["title"],
+        "description": row["description"],
+        "date_text": row["date_text"],
+        "sort_key": row["sort_key"],
+        "category": row["category"],
+        "location": location,
+        "characters": _event_characters(conn, event_id),
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
 def build_export(conn: sqlite3.Connection, owner: Optional[str] = None, project_id: Optional[int] = None) -> dict:
     """project_id scopes to a single project (used by a future per-project
     export); owner (with project_id=None) scopes to all of that owner's
     projects (used by the user-facing "download snapshot" export);
     neither dumps every owner's every project (used for the
     whole-household Drive backup). Output shape: {"exported_at", "projects":
-    [{"id", "owner", "title", "meta", "fields", "characters", "locations"},
-    ...]}. Each character's embedded "locations" list (from _character_detail)
-    is what carries character_locations links on restore — locations
-    themselves (the entities) are exported separately here since a location
-    with zero linked characters would otherwise never appear."""
+    [{"id", "owner", "title", "meta", "fields", "characters", "locations",
+    "events"}, ...]}. Each character's embedded "locations"/"events" lists
+    (from _character_detail) are what carry character_locations/
+    event_characters links on restore — locations and events themselves
+    (the entities) are exported separately here since one with zero linked
+    characters would otherwise never appear."""
     if project_id is not None:
         project_rows = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchall()
     elif owner is not None:
@@ -1228,6 +1344,9 @@ def build_export(conn: sqlite3.Connection, owner: Optional[str] = None, project_
         pid = p["id"]
         char_rows = conn.execute("SELECT * FROM characters WHERE project_id = ? ORDER BY id", (pid,)).fetchall()
         loc_rows = conn.execute("SELECT * FROM locations WHERE project_id = ? ORDER BY id", (pid,)).fetchall()
+        event_rows = conn.execute(
+            "SELECT id FROM events WHERE project_id = ? ORDER BY sort_key, id", (pid,)
+        ).fetchall()
         projects.append({
             "id": pid,
             "owner": p["owner"],
@@ -1236,6 +1355,7 @@ def build_export(conn: sqlite3.Connection, owner: Optional[str] = None, project_
             "fields": _all_fields(conn, pid),
             "characters": [_character_detail(conn, r["id"]) for r in char_rows],
             "locations": [_location_detail(conn, r["id"]) for r in loc_rows],
+            "events": [_event_detail(conn, r["id"]) for r in event_rows],
         })
     return {
         "exported_at": _now(),
@@ -2088,6 +2208,223 @@ def delete_character_location(
 
 
 # ---------------------------------------------------------------------------
+# Events — the Timeline. Fixed built-in fields, ordered by sort_key (moved
+# up/down rather than typed), linked to characters via event_characters
+# and to a single optional location. See schema.sql's comment on `events`.
+# ---------------------------------------------------------------------------
+
+@app.get("/event_categories")
+def list_event_categories():
+    return {"categories": [{"name": name, "color": color} for name, color in EVENT_CATEGORY_COLORS.items()]}
+
+
+@app.get("/events")
+def list_events(project_id: int = Depends(get_current_project)):
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            "SELECT id FROM events WHERE project_id = ? ORDER BY sort_key, id", (project_id,)
+        ).fetchall()
+        return [_event_detail(conn, r["id"]) for r in rows]
+    finally:
+        conn.close()
+
+
+@app.get("/events/{event_id}")
+def get_event(event_id: int, project_id: int = Depends(get_current_project)):
+    conn = get_conn()
+    try:
+        row = _get_owned_event(conn, event_id, project_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="Event not found")
+        return _event_detail(conn, event_id)
+    finally:
+        conn.close()
+
+
+@app.post("/events", status_code=201)
+def create_event(body: EventIn, project_id: int = Depends(get_current_project)):
+    conn = get_conn()
+    try:
+        loc_id = body.location_id
+        if loc_id is not None and not _get_owned_location(conn, loc_id, project_id):
+            raise HTTPException(status_code=400, detail="Location not found in this project")
+        category = body.category if body.category in EVENT_CATEGORIES else "Other"
+        max_sort = conn.execute(
+            "SELECT COALESCE(MAX(sort_key), -1) FROM events WHERE project_id = ?", (project_id,)
+        ).fetchone()[0]
+        now = _now()
+        cur = conn.execute(
+            "INSERT INTO events (project_id, title, description, date_text, sort_key, category, "
+            "location_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                project_id, (body.title or "").strip(), body.description or "", body.date_text or "",
+                max_sort + 1, category, loc_id, now, now,
+            ),
+        )
+        event_id = cur.lastrowid
+        conn.commit()
+        detail = _event_detail(conn, event_id)
+    finally:
+        conn.close()
+    schedule_backup()
+    return detail
+
+
+@app.put("/events/{event_id}")
+def update_event(event_id: int, body: EventUpdate, project_id: int = Depends(get_current_project)):
+    conn = get_conn()
+    try:
+        row = _get_owned_event(conn, event_id, project_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="Event not found")
+
+        fields_set = body.model_fields_set
+        if "location_id" in fields_set:
+            new_loc_id = body.location_id
+            if new_loc_id is not None and not _get_owned_location(conn, new_loc_id, project_id):
+                raise HTTPException(status_code=400, detail="Location not found in this project")
+            conn.execute("UPDATE events SET location_id = ? WHERE id = ?", (new_loc_id, event_id))
+
+        if body.title is not None:
+            conn.execute("UPDATE events SET title = ? WHERE id = ?", (body.title.strip(), event_id))
+        if body.description is not None:
+            conn.execute("UPDATE events SET description = ? WHERE id = ?", (body.description, event_id))
+        if body.date_text is not None:
+            conn.execute("UPDATE events SET date_text = ? WHERE id = ?", (body.date_text, event_id))
+        if body.category is not None:
+            category = body.category if body.category in EVENT_CATEGORIES else "Other"
+            conn.execute("UPDATE events SET category = ? WHERE id = ?", (category, event_id))
+        conn.execute("UPDATE events SET updated_at = ? WHERE id = ?", (_now(), event_id))
+        conn.commit()
+        detail = _event_detail(conn, event_id)
+    finally:
+        conn.close()
+    schedule_backup()
+    return detail
+
+
+@app.put("/events/{event_id}/move")
+def move_event(event_id: int, body: EventMoveIn, project_id: int = Depends(get_current_project)):
+    """Swaps sort_key with the adjacent event in the project's ordered
+    list — deliberately not a typed-in number (see schema.sql's comment
+    on `events`), so "reorder" is just "move up" / "move down"."""
+    conn = get_conn()
+    try:
+        row = _get_owned_event(conn, event_id, project_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="Event not found")
+        if body.direction not in ("up", "down"):
+            raise HTTPException(status_code=400, detail="direction must be 'up' or 'down'")
+
+        ordered = conn.execute(
+            "SELECT id, sort_key FROM events WHERE project_id = ? ORDER BY sort_key, id", (project_id,)
+        ).fetchall()
+        idx = next((i for i, r in enumerate(ordered) if r["id"] == event_id), None)
+        neighbor_idx = idx - 1 if body.direction == "up" else idx + 1
+        if idx is None or neighbor_idx < 0 or neighbor_idx >= len(ordered):
+            return _event_detail(conn, event_id)  # already at an end — no-op, not an error
+
+        neighbor = ordered[neighbor_idx]
+        conn.execute("UPDATE events SET sort_key = ? WHERE id = ?", (neighbor["sort_key"], event_id))
+        conn.execute("UPDATE events SET sort_key = ? WHERE id = ?", (row["sort_key"], neighbor["id"]))
+        conn.commit()
+        detail = _event_detail(conn, event_id)
+    finally:
+        conn.close()
+    schedule_backup()
+    return detail
+
+
+@app.delete("/events/{event_id}", status_code=204)
+def delete_event(event_id: int, project_id: int = Depends(get_current_project)):
+    conn = get_conn()
+    try:
+        row = _get_owned_event(conn, event_id, project_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="Event not found")
+        conn.execute("DELETE FROM events WHERE id = ?", (event_id,))
+        conn.commit()
+    finally:
+        conn.close()
+    schedule_backup()
+
+
+# ---------------------------------------------------------------------------
+# Event <-> Character links — directional, freeform role (not a reciprocal
+# catalog, same reasoning as character_locations).
+# ---------------------------------------------------------------------------
+
+@app.post("/event_characters", status_code=201)
+def create_event_character(
+    body: EventCharacterIn, owner: str = Depends(get_current_owner), project_id: int = Depends(get_current_project),
+):
+    conn = get_conn()
+    try:
+        event_row = _get_owned_event(conn, body.event_id, project_id)
+        if not event_row:
+            raise HTTPException(status_code=400, detail="Event not found in this project")
+        char_row = _get_owned_character(conn, body.character_id, owner, project_id)
+        if not char_row:
+            raise HTTPException(status_code=400, detail="Must be one of your own characters")
+        try:
+            cur = conn.execute(
+                "INSERT INTO event_characters (event_id, character_id, role) VALUES (?, ?, ?)",
+                (body.event_id, body.character_id, (body.role or "").strip()),
+            )
+        except sqlite3.IntegrityError:
+            raise HTTPException(status_code=409, detail="That link already exists")
+        conn.commit()
+        link_id = cur.lastrowid
+        detail = _event_detail(conn, body.event_id)
+    finally:
+        conn.close()
+    schedule_backup()
+    return {"id": link_id, "event": detail}
+
+
+@app.put("/event_characters/{link_id}")
+def update_event_character(
+    link_id: int, body: EventCharacterUpdate,
+    owner: str = Depends(get_current_owner), project_id: int = Depends(get_current_project),
+):
+    conn = get_conn()
+    try:
+        link = conn.execute(
+            "SELECT ec.*, e.project_id AS event_project_id FROM event_characters ec "
+            "JOIN events e ON e.id = ec.event_id WHERE ec.id = ?", (link_id,)
+        ).fetchone()
+        if not link or link["event_project_id"] != project_id:
+            raise HTTPException(status_code=404, detail="Link not found")
+        conn.execute(
+            "UPDATE event_characters SET role = ? WHERE id = ?", ((body.role or "").strip(), link_id)
+        )
+        conn.commit()
+        detail = _event_detail(conn, link["event_id"])
+    finally:
+        conn.close()
+    schedule_backup()
+    return detail
+
+
+@app.delete("/event_characters/{link_id}", status_code=204)
+def delete_event_character(link_id: int, project_id: int = Depends(get_current_project)):
+    conn = get_conn()
+    try:
+        link = conn.execute(
+            "SELECT ec.*, e.project_id AS event_project_id FROM event_characters ec "
+            "JOIN events e ON e.id = ec.event_id WHERE ec.id = ?", (link_id,)
+        ).fetchone()
+        if not link or link["event_project_id"] != project_id:
+            raise HTTPException(status_code=404, detail="Link not found")
+        conn.execute("DELETE FROM event_characters WHERE id = ?", (link_id,))
+        conn.commit()
+    finally:
+        conn.close()
+    schedule_backup()
+
+
+# ---------------------------------------------------------------------------
 # Relationships — reciprocal, catalog-based (see schema.sql's comment on
 # `relationships` for the char_a/char_b + role_a_to_b/role_b_to_a model).
 # ---------------------------------------------------------------------------
@@ -2598,6 +2935,8 @@ async def restore_data(body: RestoreIn):
 
     conn = get_conn()
     try:
+        conn.execute("DELETE FROM event_characters")
+        conn.execute("DELETE FROM events")
         conn.execute("DELETE FROM character_locations")
         conn.execute("DELETE FROM location_tags")
         conn.execute("DELETE FROM locations")
@@ -2676,6 +3015,21 @@ async def restore_data(body: RestoreIn):
                         "UPDATE locations SET parent_location_id = ? WHERE id = ?", (new_parent_id, new_id)
                     )
 
+            old_to_new_event_id = {}
+            for ev in proj.get("events", []):
+                old_loc_id = (ev.get("location") or {}).get("id")
+                cur = conn.execute(
+                    "INSERT INTO events (project_id, title, description, date_text, sort_key, category, "
+                    "location_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        project_id, ev.get("title", ""), ev.get("description", ""), ev.get("date_text", ""),
+                        ev.get("sort_key", 0), ev.get("category", "Other"),
+                        old_to_new_location_id.get(old_loc_id) if old_loc_id else None,
+                        ev.get("created_at", _now()), ev.get("updated_at", _now()),
+                    ),
+                )
+                old_to_new_event_id[ev["id"]] = cur.lastrowid
+
             old_to_new_char_id = {}
             for c in proj.get("characters", []):
                 cur = conn.execute(
@@ -2739,6 +3093,20 @@ async def restore_data(body: RestoreIn):
                         "INSERT OR IGNORE INTO character_locations (character_id, location_id, role) "
                         "VALUES (?, ?, ?)",
                         (new_character_id, new_location_id, cl.get("role") or ""),
+                    )
+
+            # Same reasoning as character_locations above — an
+            # event_characters link is only ever described from the
+            # character's side.
+            for c in proj.get("characters", []):
+                new_character_id = old_to_new_char_id.get(c["id"])
+                for ec in c.get("events") or []:
+                    new_event_id = old_to_new_event_id.get(ec.get("event_id"))
+                    if new_character_id is None or new_event_id is None:
+                        continue
+                    conn.execute(
+                        "INSERT OR IGNORE INTO event_characters (event_id, character_id, role) VALUES (?, ?, ?)",
+                        (new_event_id, new_character_id, ec.get("role") or ""),
                     )
 
         conn.commit()

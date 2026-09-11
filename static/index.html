@@ -74,6 +74,12 @@ header {
 .dot.backed { background: var(--green); }
 #user-btn { font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: var(--muted); }
 
+/* ---------- main section tabs ---------- */
+.main-tabs { display: flex; gap: 6px; padding: 0 20px; background: var(--panel); border-bottom: 1px solid var(--line); }
+.main-tab { border: none; background: none; padding: 13px 6px; margin-bottom: -1px; cursor: pointer; font-size: 13.5px; color: var(--muted); border-bottom: 2px solid transparent; }
+.main-tab:hover { color: var(--ink); }
+.main-tab.active { color: var(--ink); font-weight: 600; border-bottom-color: var(--accent); }
+
 /* ---------- login gate ---------- */
 .login-btn-row { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margin-top: 8px; }
 .login-user-btn { padding: 13px 28px; font-size: 15px; }
@@ -91,7 +97,10 @@ main { padding: 0 20px 70px; }
 .banner-warn strong { color: var(--ink); }
 .banner-warn button { margin-left: auto; border: 1px solid var(--line); background: var(--panel); padding: 7px 13px; border-radius: 8px; cursor: pointer; font-size: 12.5px; }
 .gridgap { height: 22px; }
-.loc-toolbar { margin-bottom: 18px; }
+.view-toolbar { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 18px; }
+.view-toggle { display: flex; gap: 2px; padding: 3px; background: var(--panel2); border: 1px solid var(--line); border-radius: 9px; margin-left: auto; }
+.view-toggle button { border: none; padding: 6px 11px; border-radius: 6px; cursor: pointer; font-size: 12px; font-family: 'IBM Plex Mono', monospace; background: transparent; color: var(--muted); }
+.view-toggle button.active { background: var(--ink); color: var(--bg); }
 
 .empty-state { max-width: 460px; margin: 11vh auto; text-align: center; }
 .empty-state .title { font-family: var(--hf); font-size: 30px; margin-bottom: 10px; font-style: italic; }
@@ -179,11 +188,25 @@ a.chip { text-decoration: none; color: inherit; }
 .rel-row select { flex: 1 1 150px; padding: 9px 10px; background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; font-size: 13px; }
 .rel-row input { flex: 2 1 180px; padding: 9px 12px; background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; font-size: 13px; }
 .rel-row .rel-role { flex: 1 1 170px; }
-.rel-row .rel-remove { border: 1px solid var(--line); background: var(--panel); width: 34px; height: 34px; border-radius: 8px; cursor: pointer; color: var(--muted); flex: none; }
+.rel-remove { border: 1px solid var(--line); background: var(--panel); width: 34px; height: 34px; border-radius: 8px; cursor: pointer; color: var(--muted); flex: none; font-size: 16px; line-height: 1; }
 .rel-custom-wrap { flex: 1 1 100%; }
 .rel-custom-fields { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 2px; }
 .rel-custom-fields input, .rel-custom-fields select { flex: 1 1 140px; font-size: 12.5px; }
 .add-rel-btn { border: 1px dashed var(--line); background: none; padding: 8px 14px; border-radius: 8px; cursor: pointer; font-size: 13px; color: var(--muted); margin-top: 4px; }
+
+/* ---------- timeline ---------- */
+.event-card { border: 1px solid var(--line); border-radius: 13px; background: var(--panel); margin-bottom: 16px; overflow: hidden; transition: outline-color .3s ease; outline: 2px solid transparent; outline-offset: 2px; }
+.event-card.event-flash { outline-color: var(--accent); }
+.event-card-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 14px 16px; border-bottom: 1px solid var(--line); }
+.event-move { display: flex; flex-direction: column; gap: 2px; }
+.event-move button { border: 1px solid var(--line); background: var(--panel2); width: 24px; height: 18px; border-radius: 4px; cursor: pointer; color: var(--muted); font-size: 10px; line-height: 1; padding: 0; }
+.event-move button:disabled { opacity: .3; cursor: default; }
+.event-cat-dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+.event-card-head select { padding: 8px 9px; background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; font-size: 12.5px; flex: none; }
+.event-date-input { flex: 1 1 130px; min-width: 100px; padding: 8px 11px; background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; font-size: 12.5px; font-family: 'IBM Plex Mono', monospace; color: var(--muted); }
+.event-title-input { flex: 3 1 220px; min-width: 140px; padding: 8px 11px; background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; font-size: 15px; font-weight: 600; font-family: var(--hf); }
+.event-card-body { padding: 16px; }
+.event-card-body textarea { margin-bottom: 14px; }
 .detail-actions { display: flex; gap: 10px; flex-wrap: wrap; }
 .detail-hint { font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: var(--muted); margin: 12px 0 0; line-height: 1.5; }
 
@@ -272,12 +295,11 @@ a.chip { text-decoration: none; color: inherit; }
   </div>
   <input id="search-input" placeholder="Search name, role, species, tag…">
   <div class="theme-toggle" id="theme-toggle"></div>
-  <button class="btn-solid" id="new-btn">+ New</button>
-  <button class="btn-line" id="locations-btn">Locations</button>
-  <button class="btn-line" id="map-btn">Map</button>
   <button class="btn-line" id="backup-btn" title="Backup status"><span class="dot" id="backup-dot"></span>Backup</button>
   <button class="btn-line" id="user-btn" title="Switch user"></button>
 </header>
+
+<nav id="main-tabs" class="main-tabs" style="display:none"></nav>
 
 <div id="tagrow"></div>
 
@@ -322,6 +344,7 @@ let STATE = {
   project: null, projects: [],
   locations: [], selectedLocationId: null, selectedLocationDetail: null,
   locationActiveTag: null,
+  events: [], eventCategories: null,
 };
 
 // ---------------------------------------------------------------- helpers
@@ -338,6 +361,10 @@ function isValidColor(v) { return typeof v === 'string' && /^#[0-9a-fA-F]{3,8}$/
 // no matter which of the 5 UI themes is active.
 function colorForCategory(category) {
   const cat = STATE.relationshipRoles && STATE.relationshipRoles.categories.find(c => c.name === category);
+  return cat ? cat.color : 'var(--muted)';
+}
+function colorForEventCategory(category) {
+  const cat = STATE.eventCategories && STATE.eventCategories.find(c => c.name === category);
   return cat ? cat.color : 'var(--muted)';
 }
 function setActiveSwatch(container, color) {
@@ -407,9 +434,6 @@ function buildHeaderOnce() {
     if (STATE.view === 'grid') renderGridResults();
     else if (STATE.view === 'locations') renderLocationsResults();
   });
-  document.getElementById('new-btn').addEventListener('click', createNewCharacter);
-  document.getElementById('locations-btn').addEventListener('click', () => goLocations());
-  document.getElementById('map-btn').addEventListener('click', () => goMap());
   document.getElementById('backup-btn').addEventListener('click', openBackupModal);
   document.getElementById('user-btn').addEventListener('click', async () => {
     try { await api('POST', '/logout'); } catch (e) {}
@@ -424,6 +448,29 @@ function buildHeaderOnce() {
     closeProjectPopover();
   });
   renderThemeToggle();
+}
+
+// ---------------------------------------------------------------- main tabs (Characters / Locations / Timeline)
+
+function mainTabForView(view) {
+  if (view === 'grid' || view === 'detail' || view === 'map') return 'characters';
+  if (view === 'locations' || view === 'locationDetail') return 'locations';
+  if (view === 'timeline' || view === 'eventDetail') return 'timeline';
+  return null;  // e.g. 'import' isn't part of any tab
+}
+
+function renderMainTabs() {
+  const el = document.getElementById('main-tabs');
+  const active = mainTabForView(STATE.view);
+  const tabs = [
+    { key: 'characters', label: 'Characters', go: goGrid },
+    { key: 'locations', label: 'Locations', go: goLocations },
+    { key: 'timeline', label: 'Timeline', go: goTimeline },
+  ];
+  el.innerHTML = tabs.map(t => `<button class="main-tab ${active === t.key ? 'active' : ''}" data-tab="${t.key}">${t.label}</button>`).join('');
+  el.querySelectorAll('.main-tab').forEach((btn, i) => {
+    btn.addEventListener('click', () => tabs[i].go());
+  });
 }
 
 function updateUserBadge() {
@@ -677,6 +724,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   STATE.owner = me.username;
 
   document.querySelector('header').style.display = '';
+  document.getElementById('main-tabs').style.display = '';
   buildHeaderOnce();
   updateUserBadge();
 
@@ -696,10 +744,13 @@ window.addEventListener('DOMContentLoaded', async () => {
   renderProjectSwitcherButton();
 
   try {
-    [STATE.fields, STATE.relationshipRoles] = await Promise.all([
+    let eventCategoriesRes;
+    [STATE.fields, STATE.relationshipRoles, eventCategoriesRes] = await Promise.all([
       api('GET', '/fields'),
       api('GET', '/relationship_roles'),
+      api('GET', '/event_categories'),
     ]);
+    STATE.eventCategories = eventCategoriesRes.categories;
   } catch (e) {
     document.getElementById('main-content').innerHTML = `<div class="empty-state"><div class="title">Can't reach the server</div><p>${escapeHtml(e.message)}</p></div>`;
     return;
@@ -762,12 +813,15 @@ async function goDetail(id) {
   STATE.selectedId = id;
   document.getElementById('main-content').innerHTML = `<div class="empty-state"><div class="title">Loading…</div></div>`;
   try {
-    // Refresh the character list too — it drives the collection number and
-    // the relationship-target dropdown, both of which need current names,
-    // not whatever was cached from the last gallery visit.
-    [STATE.selectedDetail, STATE.characters] = await Promise.all([
+    // Refresh the character list and locations/events too — they drive the
+    // collection number and the relationship/location/event-link target
+    // dropdowns, all of which need current names, not whatever was cached
+    // from the last visit to those sections.
+    [STATE.selectedDetail, STATE.characters, STATE.locations, STATE.events] = await Promise.all([
       api('GET', `/characters/${id}`),
       api('GET', '/characters'),
+      api('GET', '/locations'),
+      api('GET', '/events'),
     ]);
   } catch (e) {
     document.getElementById('main-content').innerHTML = `<div class="empty-state"><div class="title">Could not load this character</div><p>${escapeHtml(e.message)}</p></div>`;
@@ -852,6 +906,53 @@ async function createNewLocation() {
   }
 }
 
+// ---------------------------------------------------------------- timeline
+
+async function goTimeline() {
+  STATE.view = 'timeline';
+  STATE.selectedId = null; STATE.selectedDetail = null;
+  STATE.selectedLocationId = null; STATE.selectedLocationDetail = null;
+  try {
+    [STATE.events, STATE.locations, STATE.characters] = await Promise.all([
+      api('GET', '/events'),
+      api('GET', '/locations'),
+      api('GET', '/characters'),
+    ]);
+  } catch (e) {
+    document.getElementById('main-content').innerHTML = `<div class="empty-state"><div class="title">Could not load the timeline</div><p>${escapeHtml(e.message)}</p></div>`;
+    return;
+  }
+  renderTimelineView();
+}
+
+// Used by "jump to this event" links from a character's or location's
+// detail page — loads the timeline (if not already on it) then scrolls
+// the specific event card into view with a brief highlight.
+async function goTimelineHighlight(eventId) {
+  if (STATE.view !== 'timeline') await goTimeline();
+  requestAnimationFrame(() => {
+    const card = document.querySelector(`.event-card[data-id="${eventId}"]`);
+    if (!card) return;
+    card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    card.classList.add('event-flash');
+    setTimeout(() => card.classList.remove('event-flash'), 1600);
+  });
+}
+
+async function createNewEvent() {
+  try {
+    const ev = await api('POST', '/events', { title: '' });
+    STATE.events.push(ev);
+    redrawTimelineList();
+    requestAnimationFrame(() => {
+      const input = document.querySelector(`.event-card[data-id="${ev.id}"] [data-role=title]`);
+      if (input) input.focus();
+    });
+  } catch (e) {
+    alert('Could not create event: ' + e.message);
+  }
+}
+
 // ---------------------------------------------------------------- tag row (gallery only)
 
 function renderTagRow() {
@@ -879,12 +980,29 @@ function renderTagChips(el, items, activeTag, onSelect) {
 // ---------------------------------------------------------------- grid view
 
 function renderGridView() {
+  renderMainTabs();
   const main = document.getElementById('main-content');
   main.innerHTML = `
+    <div class="view-toolbar"><button class="btn-solid" id="new-char-btn">+ New character</button><div class="view-toggle" id="char-view-toggle"></div></div>
     <div id="backup-banner"></div>
     <div class="gridgap"></div>
     <div id="grid-results"></div>`;
+  document.getElementById('new-char-btn').addEventListener('click', createNewCharacter);
+  renderCharViewToggle('grid');
   renderGridResults();
+}
+
+// Grid/Map is a secondary view switch nested inside the Characters tab
+// (Map is a visualization of character relationships specifically, not
+// its own top-level section) — see #char-view-toggle.
+function renderCharViewToggle(active) {
+  const el = document.getElementById('char-view-toggle');
+  if (!el) return;
+  el.innerHTML = `
+    <button class="${active === 'grid' ? 'active' : ''}" data-view="grid">Grid</button>
+    <button class="${active === 'map' ? 'active' : ''}" data-view="map">Map</button>`;
+  el.querySelector('[data-view=grid]').addEventListener('click', () => { if (active !== 'grid') goGrid(); });
+  el.querySelector('[data-view=map]').addEventListener('click', () => { if (active !== 'map') goMap(); });
 }
 
 function filteredCharacters() {
@@ -966,10 +1084,11 @@ function cardHTML(c, num) {
 // ---------------------------------------------------------------- locations gallery view
 
 function renderLocationsGridView() {
+  renderMainTabs();
   const main = document.getElementById('main-content');
   main.innerHTML = `
     <div class="gridgap"></div>
-    <div class="loc-toolbar"><button class="btn-line" id="new-loc-btn">+ New location</button></div>
+    <div class="view-toolbar"><button class="btn-solid" id="new-loc-btn">+ New location</button></div>
     <div id="loc-grid-results"></div>`;
   document.getElementById('new-loc-btn').addEventListener('click', createNewLocation);
   renderLocationsResults();
@@ -1030,6 +1149,216 @@ function locationCardHTML(l) {
     </button>`;
 }
 
+// ---------------------------------------------------------------- timeline view
+
+function renderTimelineView() {
+  renderMainTabs();
+  const main = document.getElementById('main-content');
+  main.innerHTML = `
+    <div class="view-toolbar"><button class="btn-solid" id="new-event-btn">+ New event</button></div>
+    <div id="timeline-list"></div>`;
+  document.getElementById('new-event-btn').addEventListener('click', createNewEvent);
+  redrawTimelineList();
+}
+
+function redrawTimelineList() {
+  const el = document.getElementById('timeline-list');
+  if (!el) return;
+  if (STATE.events.length === 0) {
+    el.innerHTML = `
+      <div class="empty-state">
+        <div class="title">No events yet</div>
+        <p>Add the moments that matter — meetings, discoveries, battles — and reorder them however your story's chronology works.</p>
+        <button class="btn-solid" id="empty-new-event-btn" style="padding:11px 20px;border-radius:9px">Create your first event</button>
+      </div>`;
+    el.querySelector('#empty-new-event-btn').addEventListener('click', createNewEvent);
+    return;
+  }
+  el.innerHTML = STATE.events.map(eventCardHTML).join('');
+  STATE.events.forEach(wireEventCard);
+}
+
+function eventCardHTML(ev, idx) {
+  const color = colorForEventCategory(ev.category);
+  return `
+    <div class="event-card" data-id="${ev.id}">
+      <div class="event-card-head">
+        <div class="event-move">
+          <button data-role="move-up" ${idx === 0 ? 'disabled' : ''} title="Move earlier">&uarr;</button>
+          <button data-role="move-down" ${idx === STATE.events.length - 1 ? 'disabled' : ''} title="Move later">&darr;</button>
+        </div>
+        <span class="event-cat-dot" style="background:${color}"></span>
+        <select data-role="category">
+          ${(STATE.eventCategories || []).map(c => `<option value="${escapeHtml(c.name)}" ${c.name === ev.category ? 'selected' : ''}>${escapeHtml(c.name)}</option>`).join('')}
+        </select>
+        <input data-role="date_text" class="event-date-input" placeholder="When… (e.g. Year 3, Spring)" value="${escapeHtml(ev.date_text)}">
+        <input data-role="title" class="event-title-input" placeholder="Event title" value="${escapeHtml(ev.title)}">
+        <button class="rel-remove" data-role="delete" title="Delete event">&times;</button>
+      </div>
+      <div class="event-card-body">
+        <textarea data-role="description" class="field-textarea" placeholder="What happened…" rows="3">${escapeHtml(ev.description)}</textarea>
+        <div class="fields-grid">
+          <div>
+            <label class="field-label">Location</label>
+            <select data-role="location" class="field-select">
+              <option value="">— none —</option>
+              ${STATE.locations.map(l => `<option value="${l.id}" ${ev.location && ev.location.id === l.id ? 'selected' : ''}>${escapeHtml(l.name || 'Unnamed')}</option>`).join('')}
+            </select>
+          </div>
+        </div>
+        <label class="field-label" style="margin-top:14px;display:block">Characters</label>
+        <div data-role="characters-list"></div>
+        <button class="add-rel-btn" data-role="add-char">+ Link a character</button>
+      </div>
+    </div>`;
+}
+
+function wireEventCard(ev) {
+  const card = document.querySelector(`.event-card[data-id="${ev.id}"]`);
+  if (!card) return;
+  card.querySelector('[data-role=title]').addEventListener('change', e => saveEventField(ev, 'title', e.target.value));
+  card.querySelector('[data-role=date_text]').addEventListener('change', e => saveEventField(ev, 'date_text', e.target.value));
+  card.querySelector('[data-role=description]').addEventListener('change', e => saveEventField(ev, 'description', e.target.value));
+  card.querySelector('[data-role=category]').addEventListener('change', e => saveEventField(ev, 'category', e.target.value));
+  card.querySelector('[data-role=location]').addEventListener('change', e => {
+    saveEventField(ev, 'location_id', e.target.value ? Number(e.target.value) : null);
+  });
+  card.querySelector('[data-role=delete]').addEventListener('click', () => deleteEvent(ev));
+  card.querySelector('[data-role=add-char]').addEventListener('click', () => handleAddEventCharacter(ev));
+  const upBtn = card.querySelector('[data-role=move-up]');
+  const downBtn = card.querySelector('[data-role=move-down]');
+  if (upBtn && !upBtn.disabled) upBtn.addEventListener('click', () => moveEvent(ev, 'up'));
+  if (downBtn && !downBtn.disabled) downBtn.addEventListener('click', () => moveEvent(ev, 'down'));
+  redrawEventCharacters(ev);
+}
+
+async function saveEventField(ev, key, value) {
+  try {
+    const updated = await api('PUT', `/events/${ev.id}`, { [key]: value });
+    Object.assign(ev, updated);
+    if (key === 'category') {
+      const dot = document.querySelector(`.event-card[data-id="${ev.id}"] .event-cat-dot`);
+      if (dot) dot.style.background = colorForEventCategory(ev.category);
+    }
+  } catch (e) {
+    alert('Could not save: ' + e.message);
+    redrawTimelineList();
+  }
+}
+
+async function deleteEvent(ev) {
+  if (!confirm(`Delete "${ev.title || 'this event'}" permanently?`)) return;
+  try {
+    await api('DELETE', `/events/${ev.id}`);
+    STATE.events = STATE.events.filter(e => e.id !== ev.id);
+    redrawTimelineList();
+  } catch (e) {
+    alert('Delete failed: ' + e.message);
+  }
+}
+
+async function moveEvent(ev, direction) {
+  try {
+    await api('PUT', `/events/${ev.id}/move`, { direction });
+    STATE.events = await api('GET', '/events');
+    redrawTimelineList();
+  } catch (e) {
+    alert('Could not reorder: ' + e.message);
+  }
+}
+
+// ---- characters linked to an event (one widget instance per event card) ----
+
+function redrawEventCharacters(ev) {
+  const el = document.querySelector(`.event-card[data-id="${ev.id}"] [data-role=characters-list]`);
+  if (!el) return;
+  if (!ev._charDrafts) ev._charDrafts = [];
+
+  const existingRows = (ev.characters || []).map(ec => `
+    <div class="rel-row" data-key="l-${ec.id}">
+      <a class="chip" href="#" data-goto-char="${ec.character_id}">${escapeHtml(ec.character_name || 'Unnamed')}</a>
+      <input data-role="ec-role" placeholder="Role (optional)" value="${escapeHtml(ec.role || '')}">
+      <button class="rel-remove" data-role="ec-remove">&times;</button>
+    </div>`).join('');
+
+  const draftRows = ev._charDrafts.map(dr => `
+    <div class="rel-row" data-key="d-${dr._draftId}">
+      <select data-role="ec-target">
+        <option value="">— choose character —</option>
+        ${STATE.characters.map(c => `<option value="${c.id}">${escapeHtml(c.name || 'Unnamed')}</option>`).join('')}
+      </select>
+      <input data-role="ec-role" placeholder="Role (optional)">
+      <button class="rel-remove" data-role="ec-remove">&times;</button>
+    </div>`).join('');
+
+  el.innerHTML = existingRows + draftRows;
+
+  el.querySelectorAll('[data-goto-char]').forEach(a => {
+    a.addEventListener('click', e => { e.preventDefault(); goDetail(Number(a.dataset.gotoChar)); });
+  });
+
+  el.querySelectorAll('.rel-row').forEach(row => {
+    const [kind, idStr] = row.dataset.key.split('-');
+    const isDraft = kind === 'd';
+    const linkId = isDraft ? null : Number(idStr);
+    const draftId = isDraft ? Number(idStr) : null;
+    const roleInput = row.querySelector('[data-role=ec-role]');
+    const targetSelect = row.querySelector('[data-role=ec-target]');
+
+    if (targetSelect) {
+      targetSelect.addEventListener('change', () => {
+        const charId = targetSelect.value ? Number(targetSelect.value) : null;
+        if (charId) commitEventCharacterDraft(ev, draftId, charId, roleInput.value.trim());
+      });
+    } else {
+      roleInput.addEventListener('change', () => saveEventCharacterRole(ev, linkId, roleInput.value.trim()));
+    }
+
+    row.querySelector('[data-role=ec-remove]').addEventListener('click', () => {
+      if (isDraft) { ev._charDrafts = ev._charDrafts.filter(x => x._draftId !== draftId); redrawEventCharacters(ev); }
+      else removeEventCharacter(ev, linkId);
+    });
+  });
+}
+
+function handleAddEventCharacter(ev) {
+  if (!ev._charDrafts) ev._charDrafts = [];
+  if (ev._charDraftCounter === undefined) ev._charDraftCounter = 0;
+  ev._charDrafts.push({ _draftId: ev._charDraftCounter++ });
+  redrawEventCharacters(ev);
+}
+
+async function commitEventCharacterDraft(ev, draftId, characterId, role) {
+  try {
+    const res = await api('POST', '/event_characters', { event_id: ev.id, character_id: characterId, role });
+    ev._charDrafts = ev._charDrafts.filter(x => x._draftId !== draftId);
+    ev.characters = res.event.characters;
+    redrawEventCharacters(ev);
+  } catch (e) {
+    alert('Could not link character: ' + e.message);
+  }
+}
+
+async function saveEventCharacterRole(ev, linkId, role) {
+  try {
+    const updated = await api('PUT', `/event_characters/${linkId}`, { role });
+    ev.characters = updated.characters;
+  } catch (e) {
+    alert('Could not save role: ' + e.message);
+    redrawEventCharacters(ev);
+  }
+}
+
+async function removeEventCharacter(ev, linkId) {
+  try {
+    await api('DELETE', `/event_characters/${linkId}`);
+    ev.characters = ev.characters.filter(c => c.id !== linkId);
+    redrawEventCharacters(ev);
+  } catch (e) {
+    alert('Could not remove link: ' + e.message);
+  }
+}
+
 // ---------------------------------------------------------------- detail view
 
 function fieldsBySection() {
@@ -1046,6 +1375,7 @@ function sectionOptionsList() {
 }
 
 function renderDetailView() {
+  renderMainTabs();
   const d = STATE.selectedDetail;
   const idx = STATE.characters.findIndex(c => c.id === d.id);
   const num = '№ ' + String((idx >= 0 ? idx : 0) + 1).padStart(3, '0');
@@ -1080,6 +1410,11 @@ function renderDetailView() {
             <div id="char-locations-list"></div>
             <button class="add-rel-btn" id="add-loc-btn">+ Link a location</button>
           </div>
+          <div class="field-section">
+            <h3>Timeline</h3>
+            <div id="char-events-list"></div>
+            <button class="add-rel-btn" id="add-event-link-btn">+ Link an event</button>
+          </div>
           <div class="detail-actions">
             <button class="btn-line" id="add-field-btn">+ Add a custom field</button>
             <button class="btn-line" id="manage-fields-btn">Manage fields</button>
@@ -1095,6 +1430,7 @@ function renderDetailView() {
   document.getElementById('manage-fields-btn').addEventListener('click', () => openManageFieldsModal());
   document.getElementById('add-rel-btn').addEventListener('click', handleAddRelationship);
   document.getElementById('add-loc-btn').addEventListener('click', handleAddCharacterLocation);
+  document.getElementById('add-event-link-btn').addEventListener('click', handleAddCharacterEvent);
 
   const nameInput = document.getElementById('name-input');
   nameInput.addEventListener('change', async () => {
@@ -1107,6 +1443,7 @@ function renderDetailView() {
   redrawFieldSections();
   redrawRelationships();
   redrawCharacterLocations();
+  redrawCharacterEvents();
 }
 
 // ---- portrait / images ----
@@ -1675,9 +2012,114 @@ async function removeCharacterLocation(linkId) {
   }
 }
 
+// ---- character <-> event links (on the character detail page) ----
+// Same shape as redrawCharacterLocations above — an existing link shows
+// the event as a clickable chip (jumps to the timeline) with an editable
+// freeform role, only a new draft row needs an event picker.
+
+function redrawCharacterEvents() {
+  const d = STATE.selectedDetail;
+  const el = document.getElementById('char-events-list');
+  if (!el) return;
+  if (!d._eventDrafts) d._eventDrafts = [];
+
+  const existingRows = (d.events || []).map(ce => `
+    <div class="rel-row" data-key="l-${ce.id}">
+      <a class="chip" href="#" data-goto-event="${ce.event_id}">${escapeHtml(ce.event_title || 'Untitled event')}</a>
+      <input data-role="event-role" placeholder="Role (optional) — e.g. Witness" value="${escapeHtml(ce.role || '')}">
+      <button class="rel-remove" data-role="event-remove">&times;</button>
+    </div>`).join('');
+
+  const draftRows = d._eventDrafts.map(dr => `
+    <div class="rel-row" data-key="d-${dr._draftId}">
+      <select data-role="event-target">
+        <option value="">— choose event —</option>
+        ${STATE.events.map(ev => `<option value="${ev.id}">${escapeHtml(ev.title || 'Untitled event')}</option>`).join('')}
+      </select>
+      <input data-role="event-role" placeholder="Role (optional) — e.g. Witness">
+      <button class="rel-remove" data-role="event-remove">&times;</button>
+    </div>`).join('');
+
+  el.innerHTML = existingRows + draftRows;
+
+  el.querySelectorAll('[data-goto-event]').forEach(a => {
+    a.addEventListener('click', e => { e.preventDefault(); goTimelineHighlight(Number(a.dataset.gotoEvent)); });
+  });
+
+  el.querySelectorAll('.rel-row').forEach(row => {
+    const [kind, idStr] = row.dataset.key.split('-');
+    const isDraft = kind === 'd';
+    const linkId = isDraft ? null : Number(idStr);
+    const draftId = isDraft ? Number(idStr) : null;
+    const roleInput = row.querySelector('[data-role=event-role]');
+    const targetSelect = row.querySelector('[data-role=event-target]');
+
+    if (targetSelect) {
+      targetSelect.addEventListener('change', () => {
+        const eventId = targetSelect.value ? Number(targetSelect.value) : null;
+        if (eventId) commitCharacterEventDraft(draftId, eventId, roleInput.value.trim());
+      });
+    } else {
+      roleInput.addEventListener('change', () => saveCharacterEventRole(linkId, roleInput.value.trim()));
+    }
+
+    row.querySelector('[data-role=event-remove]').addEventListener('click', () => {
+      if (isDraft) { d._eventDrafts = d._eventDrafts.filter(x => x._draftId !== draftId); redrawCharacterEvents(); }
+      else removeCharacterEvent(linkId);
+    });
+  });
+}
+
+function handleAddCharacterEvent() {
+  const d = STATE.selectedDetail;
+  if (!d._eventDrafts) d._eventDrafts = [];
+  if (d._eventDraftCounter === undefined) d._eventDraftCounter = 0;
+  d._eventDrafts.push({ _draftId: d._eventDraftCounter++ });
+  redrawCharacterEvents();
+}
+
+async function commitCharacterEventDraft(draftId, eventId, role) {
+  const d = STATE.selectedDetail;
+  try {
+    const res = await api('POST', '/event_characters', { event_id: eventId, character_id: d.id, role });
+    d._eventDrafts = d._eventDrafts.filter(x => x._draftId !== draftId);
+    d.events = [...(d.events || []), {
+      id: res.id, role, event_id: eventId, event_title: res.event.title,
+      date_text: res.event.date_text, category: res.event.category,
+    }];
+    redrawCharacterEvents();
+  } catch (e) {
+    alert('Could not link event: ' + e.message);
+  }
+}
+
+async function saveCharacterEventRole(linkId, role) {
+  const d = STATE.selectedDetail;
+  const row = (d.events || []).find(ce => ce.id === linkId);
+  try {
+    await api('PUT', `/event_characters/${linkId}`, { role });
+    if (row) row.role = role;
+  } catch (e) {
+    alert('Could not save role: ' + e.message);
+    redrawCharacterEvents();
+  }
+}
+
+async function removeCharacterEvent(linkId) {
+  const d = STATE.selectedDetail;
+  try {
+    await api('DELETE', `/event_characters/${linkId}`);
+    d.events = d.events.filter(ce => ce.id !== linkId);
+    redrawCharacterEvents();
+  } catch (e) {
+    alert('Could not remove link: ' + e.message);
+  }
+}
+
 // ---------------------------------------------------------------- location detail view
 
 function renderLocationDetailView() {
+  renderMainTabs();
   const l = STATE.selectedLocationDetail;
   const main = document.getElementById('main-content');
   main.innerHTML = `
@@ -1725,6 +2167,11 @@ function renderLocationDetailView() {
             <div id="loc-characters-list"></div>
             <button class="add-rel-btn" id="add-loc-char-btn">+ Link a character</button>
           </div>
+          <div class="field-section" id="loc-events-section" style="${l.events.length ? '' : 'display:none'}">
+            <h3>Events here</h3>
+            <div id="loc-events-list"></div>
+            <p class="detail-hint">Set an event's location from the Timeline tab.</p>
+          </div>
           <p class="detail-hint">Changes save automatically.</p>
         </div>
       </div>
@@ -1745,6 +2192,7 @@ function renderLocationDetailView() {
   redrawLocationTagRow();
   redrawLocationChildren();
   redrawLocationCharacters();
+  redrawLocationEvents();
 }
 
 function redrawLocationPortrait() {
@@ -1839,6 +2287,18 @@ function redrawLocationChildren() {
   el.innerHTML = l.children.map(c => `<a class="chip" href="#" data-goto-loc="${c.id}">${escapeHtml(c.name || 'Unnamed')}</a>`).join(' ');
   el.querySelectorAll('[data-goto-loc]').forEach(a => {
     a.addEventListener('click', e => { e.preventDefault(); goLocationDetail(Number(a.dataset.gotoLoc)); });
+  });
+}
+
+function redrawLocationEvents() {
+  const l = STATE.selectedLocationDetail;
+  const section = document.getElementById('loc-events-section');
+  const el = document.getElementById('loc-events-list');
+  if (!l.events.length) { section.style.display = 'none'; return; }
+  section.style.display = '';
+  el.innerHTML = l.events.map(ev => `<a class="chip" href="#" data-goto-event="${ev.id}">${escapeHtml(ev.title || 'Untitled event')}${ev.date_text ? ` — ${escapeHtml(ev.date_text)}` : ''}</a>`).join(' ');
+  el.querySelectorAll('[data-goto-event]').forEach(a => {
+    a.addEventListener('click', e => { e.preventDefault(); goTimelineHighlight(Number(a.dataset.gotoEvent)); });
   });
 }
 
@@ -1989,6 +2449,7 @@ function buildMapEdges(relationships) {
 }
 
 function renderMapView(characters, relationships) {
+  renderMainTabs();
   if (MAP.raf) cancelAnimationFrame(MAP.raf);
   const W = MAP.W, H = MAP.H;
 
@@ -2006,7 +2467,8 @@ function renderMapView(characters, relationships) {
   const edges = buildMapEdges(relationships).filter(e => nodeById.has(e.a) && nodeById.has(e.b));
   const categoriesPresent = [...new Set(edges.map(e => e.category).filter(Boolean))];
 
-  document.getElementById('main-content').innerHTML = characters.length === 0
+  const toolbar = `<div class="view-toolbar"><button class="btn-solid" id="new-char-btn">+ New character</button><div class="view-toggle" id="char-view-toggle"></div></div>`;
+  document.getElementById('main-content').innerHTML = toolbar + (characters.length === 0
     ? `<div class="empty-state"><div class="title">No characters yet</div><p>Create a character to see them appear on the map.</p></div>`
     : `<div class="map-shell">
         <svg id="map-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">
@@ -2021,7 +2483,9 @@ function renderMapView(characters, relationships) {
           <g id="map-nodes"></g>
         </svg>
         <div class="map-legend" id="map-legend"></div>
-      </div>`;
+      </div>`);
+  document.getElementById('new-char-btn').addEventListener('click', createNewCharacter);
+  renderCharViewToggle('map');
 
   if (characters.length === 0) return;
 
@@ -2222,6 +2686,7 @@ async function goImport() {
 }
 
 function renderImportView() {
+  renderMainTabs();
   const s = STATE.importState;
   if (s.stage === 'upload') return renderImportUpload();
   if (s.stage === 'loading') {
