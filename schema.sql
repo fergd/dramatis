@@ -202,3 +202,105 @@ BEGIN
     WHERE (SELECT project_id FROM characters WHERE id = NEW.char_a_id)
        != (SELECT project_id FROM characters WHERE id = NEW.char_b_id);
 END;
+
+-- ============================================================
+-- LOCATIONS — world-building places, one project's worth. Fixed
+-- built-in fields only (no per-project custom fields, unlike
+-- characters) — name/type/description/single image, plus
+-- parent_location_id for nesting (a building inside a city inside
+-- a region). The CHECK stops a location being its own parent
+-- outright; deeper cycles (A -> B -> A) are rejected in app.py
+-- before the write, since that needs walking the chain, not
+-- something a CHECK/trigger can do here.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS locations (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id          INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    name                TEXT NOT NULL DEFAULT '',
+    location_type       TEXT NOT NULL DEFAULT '',   -- free text, e.g. "City", "Building" — no fixed catalog
+    description         TEXT NOT NULL DEFAULT '',
+    parent_location_id  INTEGER REFERENCES locations(id) ON DELETE SET NULL,
+    image_url           TEXT,    -- Cloudinary secure_url, single image (not a gallery like characters)
+    image_public_id     TEXT,    -- Cloudinary public_id, for delete
+    created_at          TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at          TEXT DEFAULT CURRENT_TIMESTAMP,
+    CHECK(parent_location_id IS NULL OR parent_location_id != id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_locations_project ON locations(project_id);
+CREATE INDEX IF NOT EXISTS idx_locations_parent ON locations(parent_location_id);
+
+-- ============================================================
+-- LOCATION_TAGS — exact mirror of character_tags, same purpose:
+-- free-text tags driving the locations gallery's filter chips.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS location_tags (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    location_id   INTEGER NOT NULL REFERENCES locations(id) ON DELETE CASCADE,
+    tag           TEXT NOT NULL,
+    UNIQUE(location_id, tag)
+);
+
+CREATE INDEX IF NOT EXISTS idx_location_tags_location ON location_tags(location_id);
+CREATE INDEX IF NOT EXISTS idx_location_tags_tag ON location_tags(tag);
+
+-- ============================================================
+-- CHARACTER_LOCATIONS — how a character connects to a place.
+-- Deliberately NOT modeled like `relationships` (no reciprocal
+-- role/inverse/category catalog) — a location doesn't hold a role
+-- back the way another character does, so this is a plain
+-- directional tag: role is free text ("Born in", "Resides in",
+-- "Rules over"), blank meaning just "associated with". UNIQUE
+-- includes role so a pair can hold several distinct ties (e.g.
+-- "Born in" and, in a later draft, "Died in" the same place would
+-- need two different role strings, but "Born in" twice collapses).
+-- ============================================================
+CREATE TABLE IF NOT EXISTS character_locations (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    character_id  INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+    location_id   INTEGER NOT NULL REFERENCES locations(id) ON DELETE CASCADE,
+    role          TEXT NOT NULL DEFAULT '',
+    created_at    TEXT DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(character_id, location_id, role)
+);
+
+CREATE INDEX IF NOT EXISTS idx_character_locations_character ON character_locations(character_id);
+CREATE INDEX IF NOT EXISTS idx_character_locations_location ON character_locations(location_id);
+
+-- ============================================================
+-- Same defense-in-depth pattern as the relationships triggers
+-- above: a location's parent, and a character_locations link,
+-- must always stay within one project. Primary enforcement is
+-- still the application-level checks in app.py.
+-- ============================================================
+CREATE TRIGGER IF NOT EXISTS trg_locations_parent_same_project_ins
+BEFORE INSERT ON locations
+BEGIN
+    SELECT RAISE(ABORT, 'a location''s parent must be in the same project')
+    WHERE NEW.parent_location_id IS NOT NULL
+      AND (SELECT project_id FROM locations WHERE id = NEW.parent_location_id) != NEW.project_id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_locations_parent_same_project_upd
+BEFORE UPDATE ON locations
+BEGIN
+    SELECT RAISE(ABORT, 'a location''s parent must be in the same project')
+    WHERE NEW.parent_location_id IS NOT NULL
+      AND (SELECT project_id FROM locations WHERE id = NEW.parent_location_id) != NEW.project_id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_character_locations_same_project_ins
+BEFORE INSERT ON character_locations
+BEGIN
+    SELECT RAISE(ABORT, 'character_locations must share a project')
+    WHERE (SELECT project_id FROM characters WHERE id = NEW.character_id)
+       != (SELECT project_id FROM locations WHERE id = NEW.location_id);
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_character_locations_same_project_upd
+BEFORE UPDATE ON character_locations
+BEGIN
+    SELECT RAISE(ABORT, 'character_locations must share a project')
+    WHERE (SELECT project_id FROM characters WHERE id = NEW.character_id)
+       != (SELECT project_id FROM locations WHERE id = NEW.location_id);
+END;

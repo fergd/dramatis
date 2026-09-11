@@ -835,6 +835,32 @@ class RelationshipUpdate(BaseModel):
     category: Optional[str] = None
 
 
+class LocationIn(BaseModel):
+    name: Optional[str] = ""
+    location_type: Optional[str] = ""
+    description: Optional[str] = ""
+    parent_location_id: Optional[int] = None
+
+
+class LocationUpdate(BaseModel):
+    name: Optional[str] = None
+    location_type: Optional[str] = None
+    description: Optional[str] = None
+    parent_location_id: Optional[int] = None  # nullable; "was this key even sent?"
+    tags: Optional[list] = None               # is read via model_fields_set (see update_location),
+                                                # since None is a valid "clear the parent" value.
+
+
+class CharacterLocationIn(BaseModel):
+    character_id: int
+    location_id: int
+    role: Optional[str] = ""
+
+
+class CharacterLocationUpdate(BaseModel):
+    role: Optional[str] = ""
+
+
 class RestoreIn(BaseModel):
     confirm: bool = False
 
@@ -1046,6 +1072,7 @@ def _character_detail(conn: sqlite3.Connection, character_id: int) -> Optional[d
         "tags": _character_tags(conn, character_id),
         "images": _character_images(conn, character_id),
         "relationships": _character_relationships(conn, character_id),
+        "locations": _character_locations(conn, character_id),
     }
 
 
@@ -1062,13 +1089,133 @@ def _character_card(conn: sqlite3.Connection, row: sqlite3.Row, values_by_char: 
     }
 
 
+# ---------------------------------------------------------------------------
+# Locations — fixed built-in fields (no per-project custom fields, unlike
+# characters), nested via parent_location_id, linked to characters via
+# character_locations (see schema.sql's comments on both).
+# ---------------------------------------------------------------------------
+
+def _get_owned_location(conn: sqlite3.Connection, location_id: int, project_id: int) -> Optional[sqlite3.Row]:
+    """Locations are project-scoped only, no owner column — same shape as
+    `fields` (see HANDOFF.md) since get_current_project already resolves
+    the project through an owner-checked cookie."""
+    return conn.execute(
+        "SELECT * FROM locations WHERE id = ? AND project_id = ?", (location_id, project_id)
+    ).fetchone()
+
+
+def _location_tags(conn: sqlite3.Connection, location_id: int) -> list:
+    rows = conn.execute(
+        "SELECT tag FROM location_tags WHERE location_id = ? ORDER BY id", (location_id,)
+    ).fetchall()
+    return [r["tag"] for r in rows]
+
+
+def _replace_location_tags(conn: sqlite3.Connection, location_id: int, tags: list):
+    conn.execute("DELETE FROM location_tags WHERE location_id = ?", (location_id,))
+    seen = set()
+    for tag in tags:
+        tag = (tag or "").strip()
+        if not tag or tag in seen:
+            continue
+        seen.add(tag)
+        conn.execute("INSERT INTO location_tags (location_id, tag) VALUES (?, ?)", (location_id, tag))
+    conn.commit()
+
+
+def _would_create_cycle(conn: sqlite3.Connection, location_id: int, new_parent_id: Optional[int]) -> bool:
+    """Walks new_parent_id's own ancestor chain looking for location_id —
+    a CHECK constraint can stop a location being its own direct parent,
+    but a longer cycle (A -> B -> A) needs this instead."""
+    current = new_parent_id
+    seen = set()
+    while current is not None:
+        if current == location_id:
+            return True
+        if current in seen:
+            return False  # already-broken chain elsewhere; not this call's problem
+        seen.add(current)
+        row = conn.execute("SELECT parent_location_id FROM locations WHERE id = ?", (current,)).fetchone()
+        current = row["parent_location_id"] if row else None
+    return False
+
+
+def _character_locations(conn: sqlite3.Connection, character_id: int) -> list:
+    rows = conn.execute(
+        "SELECT cl.id AS id, cl.role AS role, l.id AS location_id, l.name AS location_name, "
+        "l.location_type AS location_type "
+        "FROM character_locations cl JOIN locations l ON l.id = cl.location_id "
+        "WHERE cl.character_id = ? ORDER BY cl.id",
+        (character_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _location_characters(conn: sqlite3.Connection, location_id: int) -> list:
+    rows = conn.execute(
+        "SELECT cl.id AS id, cl.role AS role, c.id AS character_id, c.name AS character_name "
+        "FROM character_locations cl JOIN characters c ON c.id = cl.character_id "
+        "WHERE cl.location_id = ? ORDER BY cl.id",
+        (location_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _location_detail(conn: sqlite3.Connection, location_id: int) -> Optional[dict]:
+    row = conn.execute("SELECT * FROM locations WHERE id = ?", (location_id,)).fetchone()
+    if not row:
+        return None
+    parent = None
+    if row["parent_location_id"] is not None:
+        p = conn.execute(
+            "SELECT id, name FROM locations WHERE id = ?", (row["parent_location_id"],)
+        ).fetchone()
+        if p:
+            parent = {"id": p["id"], "name": p["name"]}
+    children = conn.execute(
+        "SELECT id, name FROM locations WHERE parent_location_id = ? ORDER BY name", (location_id,)
+    ).fetchall()
+    return {
+        "id": row["id"],
+        "project_id": row["project_id"],
+        "name": row["name"],
+        "location_type": row["location_type"],
+        "description": row["description"],
+        "image_url": cloudinary_images.derived_url(row["image_public_id"], width=DETAIL_IMAGE_WIDTH)
+            if row["image_public_id"] else None,
+        "image_public_id": row["image_public_id"],  # raw id, needed by build_export/restore_data round-trip
+        "parent": parent,
+        "children": [{"id": c["id"], "name": c["name"]} for c in children],
+        "tags": _location_tags(conn, location_id),
+        "characters": _location_characters(conn, location_id),
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def _location_card(conn: sqlite3.Connection, row: sqlite3.Row, tags_by_loc: dict) -> dict:
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "location_type": row["location_type"],
+        "thumb_url": cloudinary_images.derived_url(row["image_public_id"], width=THUMB_IMAGE_WIDTH)
+            if row["image_public_id"] else None,
+        "parent_location_id": row["parent_location_id"],
+        "tags": tags_by_loc.get(row["id"], []),
+    }
+
+
 def build_export(conn: sqlite3.Connection, owner: Optional[str] = None, project_id: Optional[int] = None) -> dict:
     """project_id scopes to a single project (used by a future per-project
     export); owner (with project_id=None) scopes to all of that owner's
     projects (used by the user-facing "download snapshot" export);
     neither dumps every owner's every project (used for the
     whole-household Drive backup). Output shape: {"exported_at", "projects":
-    [{"id", "owner", "title", "meta", "fields", "characters"}, ...]}."""
+    [{"id", "owner", "title", "meta", "fields", "characters", "locations"},
+    ...]}. Each character's embedded "locations" list (from _character_detail)
+    is what carries character_locations links on restore — locations
+    themselves (the entities) are exported separately here since a location
+    with zero linked characters would otherwise never appear."""
     if project_id is not None:
         project_rows = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchall()
     elif owner is not None:
@@ -1080,6 +1227,7 @@ def build_export(conn: sqlite3.Connection, owner: Optional[str] = None, project_
     for p in project_rows:
         pid = p["id"]
         char_rows = conn.execute("SELECT * FROM characters WHERE project_id = ? ORDER BY id", (pid,)).fetchall()
+        loc_rows = conn.execute("SELECT * FROM locations WHERE project_id = ? ORDER BY id", (pid,)).fetchall()
         projects.append({
             "id": pid,
             "owner": p["owner"],
@@ -1087,6 +1235,7 @@ def build_export(conn: sqlite3.Connection, owner: Optional[str] = None, project_
             "meta": _project_meta_list(conn, pid),
             "fields": _all_fields(conn, pid),
             "characters": [_character_detail(conn, r["id"]) for r in char_rows],
+            "locations": [_location_detail(conn, r["id"]) for r in loc_rows],
         })
     return {
         "exported_at": _now(),
@@ -1674,6 +1823,271 @@ def set_primary_image(character_id: int, image_id: int, owner: str = Depends(get
 
 
 # ---------------------------------------------------------------------------
+# Locations — fixed built-in fields, nested via parent_location_id, single
+# image (not a gallery). See schema.sql's comments on `locations`.
+# ---------------------------------------------------------------------------
+
+@app.get("/locations")
+def list_locations(project_id: int = Depends(get_current_project)):
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM locations WHERE project_id = ? ORDER BY name", (project_id,)
+        ).fetchall()
+        all_tags = conn.execute(
+            "SELECT lt.location_id AS location_id, lt.tag AS tag "
+            "FROM location_tags lt JOIN locations l ON l.id = lt.location_id "
+            "WHERE l.project_id = ? ORDER BY lt.id",
+            (project_id,),
+        ).fetchall()
+        tags_by_loc: dict = {}
+        for t in all_tags:
+            tags_by_loc.setdefault(t["location_id"], []).append(t["tag"])
+        return [_location_card(conn, r, tags_by_loc) for r in rows]
+    finally:
+        conn.close()
+
+
+@app.get("/locations/{location_id}")
+def get_location(location_id: int, project_id: int = Depends(get_current_project)):
+    conn = get_conn()
+    try:
+        row = _get_owned_location(conn, location_id, project_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="Location not found")
+        return _location_detail(conn, location_id)
+    finally:
+        conn.close()
+
+
+@app.post("/locations", status_code=201)
+def create_location(body: LocationIn, project_id: int = Depends(get_current_project)):
+    conn = get_conn()
+    try:
+        parent_id = body.parent_location_id
+        if parent_id is not None and not _get_owned_location(conn, parent_id, project_id):
+            raise HTTPException(status_code=400, detail="Parent location not found in this project")
+        now = _now()
+        cur = conn.execute(
+            "INSERT INTO locations (project_id, name, location_type, description, parent_location_id, "
+            "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                project_id, (body.name or "").strip(), (body.location_type or "").strip(),
+                body.description or "", parent_id, now, now,
+            ),
+        )
+        location_id = cur.lastrowid
+        conn.commit()
+        detail = _location_detail(conn, location_id)
+    finally:
+        conn.close()
+    schedule_backup()
+    return detail
+
+
+@app.put("/locations/{location_id}")
+def update_location(location_id: int, body: LocationUpdate, project_id: int = Depends(get_current_project)):
+    conn = get_conn()
+    try:
+        row = _get_owned_location(conn, location_id, project_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="Location not found")
+
+        fields_set = body.model_fields_set  # distinguishes "key omitted" from "key sent as null"
+        if "parent_location_id" in fields_set:
+            new_parent_id = body.parent_location_id
+            if new_parent_id is not None:
+                if not _get_owned_location(conn, new_parent_id, project_id):
+                    raise HTTPException(status_code=400, detail="Parent location not found in this project")
+                if _would_create_cycle(conn, location_id, new_parent_id):
+                    raise HTTPException(status_code=400, detail="That would make a location its own ancestor")
+            conn.execute(
+                "UPDATE locations SET parent_location_id = ? WHERE id = ?", (new_parent_id, location_id)
+            )
+
+        if body.name is not None:
+            conn.execute("UPDATE locations SET name = ? WHERE id = ?", (body.name.strip(), location_id))
+        if body.location_type is not None:
+            conn.execute(
+                "UPDATE locations SET location_type = ? WHERE id = ?", (body.location_type.strip(), location_id)
+            )
+        if body.description is not None:
+            conn.execute("UPDATE locations SET description = ? WHERE id = ?", (body.description, location_id))
+        conn.execute("UPDATE locations SET updated_at = ? WHERE id = ?", (_now(), location_id))
+        conn.commit()
+
+        if body.tags is not None:
+            _replace_location_tags(conn, location_id, body.tags)
+
+        detail = _location_detail(conn, location_id)
+    finally:
+        conn.close()
+    schedule_backup()
+    return detail
+
+
+@app.delete("/locations/{location_id}", status_code=204)
+def delete_location(location_id: int, project_id: int = Depends(get_current_project)):
+    conn = get_conn()
+    try:
+        row = _get_owned_location(conn, location_id, project_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="Location not found")
+        if row["image_public_id"]:
+            try:
+                cloudinary_images.destroy_image(row["image_public_id"])
+            except Exception as e:
+                logger.warning(f"Could not destroy Cloudinary asset on location delete: {e}")
+        # Children fall back to top-level (ON DELETE SET NULL on
+        # parent_location_id), never cascade-deleted with their parent.
+        conn.execute("DELETE FROM locations WHERE id = ?", (location_id,))
+        conn.commit()
+    finally:
+        conn.close()
+    schedule_backup()
+
+
+@app.post("/locations/{location_id}/image")
+async def upload_location_image(
+    location_id: int, file: UploadFile = File(...), project_id: int = Depends(get_current_project),
+):
+    conn = get_conn()
+    try:
+        row = _get_owned_location(conn, location_id, project_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="Location not found")
+        raw_bytes = await file.read()
+        try:
+            result = cloudinary_images.upload_image(raw_bytes, file.content_type or "")
+        except cloudinary_images.UploadError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            logger.error(f"Cloudinary upload failed: {e}")
+            raise HTTPException(status_code=502, detail=f"Cloudinary upload failed: {e}")
+        old_public_id = row["image_public_id"]
+        conn.execute(
+            "UPDATE locations SET image_url = ?, image_public_id = ?, updated_at = ? WHERE id = ?",
+            (result["secure_url"], result["public_id"], _now(), location_id),
+        )
+        conn.commit()
+        if old_public_id:
+            try:
+                cloudinary_images.destroy_image(old_public_id)
+            except Exception as e:
+                logger.warning(f"Could not destroy replaced Cloudinary asset: {e}")
+        detail = _location_detail(conn, location_id)
+    finally:
+        conn.close()
+    schedule_backup()
+    return detail
+
+
+@app.delete("/locations/{location_id}/image")
+def delete_location_image(location_id: int, project_id: int = Depends(get_current_project)):
+    conn = get_conn()
+    try:
+        row = _get_owned_location(conn, location_id, project_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="Location not found")
+        if row["image_public_id"]:
+            try:
+                cloudinary_images.destroy_image(row["image_public_id"])
+            except Exception as e:
+                logger.warning(f"Could not destroy Cloudinary asset: {e}")
+        conn.execute(
+            "UPDATE locations SET image_url = NULL, image_public_id = NULL, updated_at = ? WHERE id = ?",
+            (_now(), location_id),
+        )
+        conn.commit()
+        detail = _location_detail(conn, location_id)
+    finally:
+        conn.close()
+    schedule_backup()
+    return detail
+
+
+# ---------------------------------------------------------------------------
+# Character <-> Location links — directional, freeform role (not a
+# reciprocal catalog like relationships; see schema.sql's comment on
+# `character_locations`).
+# ---------------------------------------------------------------------------
+
+@app.post("/character_locations", status_code=201)
+def create_character_location(
+    body: CharacterLocationIn, owner: str = Depends(get_current_owner), project_id: int = Depends(get_current_project),
+):
+    conn = get_conn()
+    try:
+        char_row = _get_owned_character(conn, body.character_id, owner, project_id)
+        if not char_row:
+            raise HTTPException(status_code=400, detail="Must be one of your own characters")
+        loc_row = _get_owned_location(conn, body.location_id, project_id)
+        if not loc_row:
+            raise HTTPException(status_code=400, detail="Location not found in this project")
+        try:
+            cur = conn.execute(
+                "INSERT INTO character_locations (character_id, location_id, role) VALUES (?, ?, ?)",
+                (body.character_id, body.location_id, (body.role or "").strip()),
+            )
+        except sqlite3.IntegrityError:
+            raise HTTPException(status_code=409, detail="That link already exists")
+        conn.commit()
+        link_id = cur.lastrowid
+        detail = _character_detail(conn, body.character_id)
+    finally:
+        conn.close()
+    schedule_backup()
+    return {"id": link_id, "character": detail}
+
+
+@app.put("/character_locations/{link_id}")
+def update_character_location(
+    link_id: int, body: CharacterLocationUpdate,
+    owner: str = Depends(get_current_owner), project_id: int = Depends(get_current_project),
+):
+    conn = get_conn()
+    try:
+        link = conn.execute(
+            "SELECT cl.*, c.owner AS char_owner FROM character_locations cl "
+            "JOIN characters c ON c.id = cl.character_id WHERE cl.id = ?", (link_id,)
+        ).fetchone()
+        if not link or link["char_owner"] != owner:
+            raise HTTPException(status_code=404, detail="Link not found")
+        if not _get_owned_character(conn, link["character_id"], owner, project_id):
+            raise HTTPException(status_code=404, detail="Link not found")
+        conn.execute(
+            "UPDATE character_locations SET role = ? WHERE id = ?", ((body.role or "").strip(), link_id)
+        )
+        conn.commit()
+        detail = _character_detail(conn, link["character_id"])
+    finally:
+        conn.close()
+    schedule_backup()
+    return detail
+
+
+@app.delete("/character_locations/{link_id}", status_code=204)
+def delete_character_location(
+    link_id: int, owner: str = Depends(get_current_owner), project_id: int = Depends(get_current_project),
+):
+    conn = get_conn()
+    try:
+        link = conn.execute(
+            "SELECT cl.*, c.owner AS char_owner FROM character_locations cl "
+            "JOIN characters c ON c.id = cl.character_id WHERE cl.id = ?", (link_id,)
+        ).fetchone()
+        if not link or link["char_owner"] != owner:
+            raise HTTPException(status_code=404, detail="Link not found")
+        if not _get_owned_character(conn, link["character_id"], owner, project_id):
+            raise HTTPException(status_code=404, detail="Link not found")
+        conn.execute("DELETE FROM character_locations WHERE id = ?", (link_id,))
+        conn.commit()
+    finally:
+        conn.close()
+    schedule_backup()
+
+
+# ---------------------------------------------------------------------------
 # Relationships — reciprocal, catalog-based (see schema.sql's comment on
 # `relationships` for the char_a/char_b + role_a_to_b/role_b_to_a model).
 # ---------------------------------------------------------------------------
@@ -2184,6 +2598,9 @@ async def restore_data(body: RestoreIn):
 
     conn = get_conn()
     try:
+        conn.execute("DELETE FROM character_locations")
+        conn.execute("DELETE FROM location_tags")
+        conn.execute("DELETE FROM locations")
         conn.execute("DELETE FROM relationships")
         conn.execute("DELETE FROM character_tags")
         conn.execute("DELETE FROM character_images")
@@ -2228,6 +2645,36 @@ async def restore_data(body: RestoreIn):
                     ),
                 )
                 field_id_by_key[f["key"]] = cur.lastrowid
+
+            # Two passes: parent_location_id points at another location in
+            # this same project, so every row needs to exist (and its new id
+            # be known) before any parent link can be rewritten.
+            old_to_new_location_id = {}
+            for loc in proj.get("locations", []):
+                cur = conn.execute(
+                    "INSERT INTO locations (project_id, name, location_type, description, "
+                    "image_url, image_public_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        project_id, loc.get("name", ""), loc.get("location_type", ""),
+                        loc.get("description", ""), loc.get("image_url"),
+                        loc.get("image_public_id"),
+                        loc.get("created_at", _now()), loc.get("updated_at", _now()),
+                    ),
+                )
+                old_to_new_location_id[loc["id"]] = cur.lastrowid
+                for tag in loc.get("tags") or []:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO location_tags (location_id, tag) VALUES (?, ?)",
+                        (cur.lastrowid, tag),
+                    )
+            for loc in proj.get("locations", []):
+                old_parent_id = (loc.get("parent") or {}).get("id")
+                new_id = old_to_new_location_id.get(loc["id"])
+                new_parent_id = old_to_new_location_id.get(old_parent_id) if old_parent_id else None
+                if new_id is not None and new_parent_id is not None:
+                    conn.execute(
+                        "UPDATE locations SET parent_location_id = ? WHERE id = ?", (new_parent_id, new_id)
+                    )
 
             old_to_new_char_id = {}
             for c in proj.get("characters", []):
@@ -2278,6 +2725,21 @@ async def restore_data(body: RestoreIn):
                         )
                     elif role_key:
                         _upsert_relationship(conn, new_character_id, new_related_id, role_key)
+
+            # Unlike relationships, a character_locations link is only ever
+            # described from the character's side (see schema.sql) — no
+            # dedup-across-two-sides concern here.
+            for c in proj.get("characters", []):
+                new_character_id = old_to_new_char_id.get(c["id"])
+                for cl in c.get("locations") or []:
+                    new_location_id = old_to_new_location_id.get(cl.get("location_id"))
+                    if new_character_id is None or new_location_id is None:
+                        continue
+                    conn.execute(
+                        "INSERT OR IGNORE INTO character_locations (character_id, location_id, role) "
+                        "VALUES (?, ?, ?)",
+                        (new_character_id, new_location_id, cl.get("role") or ""),
+                    )
 
         conn.commit()
         # no-op per project if fields already restored, safety net if a

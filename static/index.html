@@ -91,6 +91,7 @@ main { padding: 0 20px 70px; }
 .banner-warn strong { color: var(--ink); }
 .banner-warn button { margin-left: auto; border: 1px solid var(--line); background: var(--panel); padding: 7px 13px; border-radius: 8px; cursor: pointer; font-size: 12.5px; }
 .gridgap { height: 22px; }
+.loc-toolbar { margin-bottom: 18px; }
 
 .empty-state { max-width: 460px; margin: 11vh auto; text-align: center; }
 .empty-state .title { font-family: var(--hf); font-size: 30px; margin-bottom: 10px; font-style: italic; }
@@ -141,11 +142,12 @@ main { padding: 0 20px 70px; }
 .thumb-hint { font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: var(--muted); margin: 9px 2px 0; line-height: 1.5; }
 
 .detail-right { flex: 3 1 380px; min-width: min(300px, 100%); }
-#name-input { width: 100%; font-family: var(--hf); font-size: 34px; font-weight: 600; background: none; border: none; border-bottom: 2px solid var(--accent); padding: 2px 0 8px; }
-#tag-row { display: flex; flex-wrap: wrap; gap: 7px; margin: 14px 0 22px; }
+#name-input, #loc-name-input { width: 100%; font-family: var(--hf); font-size: 34px; font-weight: 600; background: none; border: none; border-bottom: 2px solid var(--accent); padding: 2px 0 8px; }
+#tag-row, #loc-tag-row { display: flex; flex-wrap: wrap; gap: 7px; margin: 14px 0 22px; }
 .chip { display: inline-flex; align-items: center; gap: 6px; background: var(--chip); border-radius: 20px; padding: 4px 6px 4px 11px; font-size: 12px; font-family: 'IBM Plex Mono', monospace; }
 .chip button { border: none; background: none; cursor: pointer; color: var(--muted); font-size: 14px; line-height: 1; padding: 0; }
-#tag-input { width: 90px; background: none; border: 1px dashed var(--line); border-radius: 20px; padding: 5px 11px; font-size: 12px; font-family: 'IBM Plex Mono', monospace; }
+a.chip { text-decoration: none; color: inherit; }
+#tag-input, #loc-tag-input { width: 90px; background: none; border: 1px dashed var(--line); border-radius: 20px; padding: 5px 11px; font-size: 12px; font-family: 'IBM Plex Mono', monospace; }
 
 .field-section { margin-bottom: 26px; }
 .field-section h3 { font-family: 'IBM Plex Mono', monospace; font-size: 11px; text-transform: uppercase; letter-spacing: .12em; color: var(--accent); margin: 0 0 14px; padding-bottom: 7px; border-bottom: 1px solid var(--line); font-weight: 500; }
@@ -271,6 +273,7 @@ main { padding: 0 20px 70px; }
   <input id="search-input" placeholder="Search name, role, species, tag…">
   <div class="theme-toggle" id="theme-toggle"></div>
   <button class="btn-solid" id="new-btn">+ New</button>
+  <button class="btn-line" id="locations-btn">Locations</button>
   <button class="btn-line" id="map-btn">Map</button>
   <button class="btn-line" id="backup-btn" title="Backup status"><span class="dot" id="backup-dot"></span>Backup</button>
   <button class="btn-line" id="user-btn" title="Switch user"></button>
@@ -317,6 +320,8 @@ let STATE = {
   view: 'grid', selectedId: null, selectedDetail: null,
   search: '', activeTag: null,
   project: null, projects: [],
+  locations: [], selectedLocationId: null, selectedLocationDetail: null,
+  locationActiveTag: null,
 };
 
 // ---------------------------------------------------------------- helpers
@@ -397,8 +402,13 @@ function applyTheme(id) {
 function buildHeaderOnce() {
   document.getElementById('wordmark').addEventListener('click', () => goGrid());
   const search = document.getElementById('search-input');
-  search.addEventListener('input', e => { STATE.search = e.target.value; renderGridResults(); });
+  search.addEventListener('input', e => {
+    STATE.search = e.target.value;
+    if (STATE.view === 'grid') renderGridResults();
+    else if (STATE.view === 'locations') renderLocationsResults();
+  });
   document.getElementById('new-btn').addEventListener('click', createNewCharacter);
+  document.getElementById('locations-btn').addEventListener('click', () => goLocations());
   document.getElementById('map-btn').addEventListener('click', () => goMap());
   document.getElementById('backup-btn').addEventListener('click', openBackupModal);
   document.getElementById('user-btn').addEventListener('click', async () => {
@@ -796,21 +806,74 @@ async function createNewCharacter() {
   }
 }
 
+// ---------------------------------------------------------------- locations gallery/detail
+
+async function goLocations() {
+  STATE.view = 'locations';
+  STATE.selectedLocationId = null;
+  STATE.selectedLocationDetail = null;
+  try {
+    STATE.locations = await api('GET', '/locations');
+  } catch (e) {
+    document.getElementById('main-content').innerHTML = `<div class="empty-state"><div class="title">Could not load locations</div><p>${escapeHtml(e.message)}</p></div>`;
+    return;
+  }
+  renderTagRow();
+  renderLocationsGridView();
+}
+
+async function goLocationDetail(id) {
+  STATE.view = 'locationDetail';
+  STATE.selectedLocationId = id;
+  document.getElementById('main-content').innerHTML = `<div class="empty-state"><div class="title">Loading…</div></div>`;
+  try {
+    // Locations (for the parent picker) and characters (for the "link a
+    // character" picker) are refreshed alongside the detail itself, same
+    // reasoning as goDetail refreshing STATE.characters — stale cached
+    // lists would show wrong names/options in those dropdowns.
+    [STATE.selectedLocationDetail, STATE.locations, STATE.characters] = await Promise.all([
+      api('GET', `/locations/${id}`),
+      api('GET', '/locations'),
+      api('GET', '/characters'),
+    ]);
+  } catch (e) {
+    document.getElementById('main-content').innerHTML = `<div class="empty-state"><div class="title">Could not load this location</div><p>${escapeHtml(e.message)}</p></div>`;
+    return;
+  }
+  renderLocationDetailView();
+}
+
+async function createNewLocation() {
+  try {
+    const l = await api('POST', '/locations', { name: '' });
+    await goLocationDetail(l.id);
+  } catch (e) {
+    alert('Could not create location: ' + e.message);
+  }
+}
+
 // ---------------------------------------------------------------- tag row (gallery only)
 
 function renderTagRow() {
   const el = document.getElementById('tagrow');
-  if (STATE.view !== 'grid') { el.innerHTML = ''; return; }
+  if (STATE.view === 'grid') {
+    renderTagChips(el, STATE.characters, STATE.activeTag, key => { STATE.activeTag = key; renderTagRow(); renderGridResults(); });
+  } else if (STATE.view === 'locations') {
+    renderTagChips(el, STATE.locations, STATE.locationActiveTag, key => { STATE.locationActiveTag = key; renderTagRow(); renderLocationsResults(); });
+  } else {
+    el.innerHTML = '';
+  }
+}
+
+function renderTagChips(el, items, activeTag, onSelect) {
   const tagSet = [];
-  STATE.characters.forEach(c => (c.tags || []).forEach(t => { if (!tagSet.includes(t)) tagSet.push(t); }));
+  items.forEach(it => (it.tags || []).forEach(t => { if (!tagSet.includes(t)) tagSet.push(t); }));
   if (tagSet.length === 0) { el.innerHTML = ''; return; }
   const chips = [{ label: 'All', key: null }, ...tagSet.map(t => ({ label: t, key: t }))];
   el.innerHTML = chips.map(t =>
-    `<button class="tag-chip ${STATE.activeTag === t.key ? 'active' : ''}" data-key="${t.key === null ? '' : escapeHtml(t.key)}">${escapeHtml(t.label)}</button>`
+    `<button class="tag-chip ${activeTag === t.key ? 'active' : ''}" data-key="${t.key === null ? '' : escapeHtml(t.key)}">${escapeHtml(t.label)}</button>`
   ).join('');
-  el.querySelectorAll('.tag-chip').forEach((btn, i) => {
-    btn.addEventListener('click', () => { STATE.activeTag = chips[i].key; renderTagRow(); renderGridResults(); });
-  });
+  el.querySelectorAll('.tag-chip').forEach((btn, i) => btn.addEventListener('click', () => onSelect(chips[i].key)));
 }
 
 // ---------------------------------------------------------------- grid view
@@ -900,6 +963,73 @@ function cardHTML(c, num) {
     </button>`;
 }
 
+// ---------------------------------------------------------------- locations gallery view
+
+function renderLocationsGridView() {
+  const main = document.getElementById('main-content');
+  main.innerHTML = `
+    <div class="gridgap"></div>
+    <div class="loc-toolbar"><button class="btn-line" id="new-loc-btn">+ New location</button></div>
+    <div id="loc-grid-results"></div>`;
+  document.getElementById('new-loc-btn').addEventListener('click', createNewLocation);
+  renderLocationsResults();
+}
+
+function filteredLocations() {
+  const q = STATE.search.trim().toLowerCase();
+  return STATE.locations.filter(l => {
+    if (STATE.locationActiveTag && !(l.tags || []).includes(STATE.locationActiveTag)) return false;
+    if (!q) return true;
+    const hay = [l.name, l.location_type, ...(l.tags || [])].join(' ').toLowerCase();
+    return hay.includes(q);
+  });
+}
+
+function renderLocationsResults() {
+  if (STATE.view !== 'locations') return;
+  const results = filteredLocations();
+  const empty = STATE.locations.length === 0;
+  const el = document.getElementById('loc-grid-results');
+
+  if (results.length === 0) {
+    el.innerHTML = `
+      <div class="empty-state">
+        <div class="title">${empty ? 'No locations yet' : 'No matches'}</div>
+        <p>${empty ? 'Add the places your story happens — regions, cities, buildings — and nest them however deep you need.' : 'Try a different search term or clear the active tag.'}</p>
+        ${empty ? `<button class="btn-solid" id="empty-new-loc-btn" style="padding:11px 20px;border-radius:9px">Create your first location</button>` : ''}
+      </div>`;
+    if (empty) el.querySelector('#empty-new-loc-btn').addEventListener('click', createNewLocation);
+    return;
+  }
+
+  el.innerHTML = `<div class="grid">${results.map(locationCardHTML).join('')}</div>`;
+  el.querySelectorAll('.card-btn').forEach(btn => {
+    btn.addEventListener('click', () => goLocationDetail(Number(btn.dataset.id)));
+  });
+}
+
+function locationCardHTML(l) {
+  const portrait = l.thumb_url
+    ? `<img src="${escapeHtml(l.thumb_url)}" alt="" loading="lazy">`
+    : `<div class="card-placeholder"><span>${escapeHtml(initials(l.name))}</span></div>`;
+  return `
+    <button class="card-btn" data-id="${l.id}">
+      <article class="card">
+        <div class="card-portrait">
+          ${portrait}
+          <span class="card-frame"></span>
+          ${l.location_type ? `<span class="card-species">${escapeHtml(l.location_type)}</span>` : ''}
+          <div class="card-scrim">
+            <div class="card-name">${escapeHtml(l.name || 'Unnamed')}</div>
+          </div>
+        </div>
+        <div class="card-info">
+          <span>${(l.tags || []).join(', ')}</span>
+        </div>
+      </article>
+    </button>`;
+}
+
 // ---------------------------------------------------------------- detail view
 
 function fieldsBySection() {
@@ -945,6 +1075,11 @@ function renderDetailView() {
             <button class="add-rel-btn" id="add-rel-btn">+ Add relationship</button>
             <p class="detail-hint">Relationships are mirrored automatically on the other character.</p>
           </div>
+          <div class="field-section">
+            <h3>Locations</h3>
+            <div id="char-locations-list"></div>
+            <button class="add-rel-btn" id="add-loc-btn">+ Link a location</button>
+          </div>
           <div class="detail-actions">
             <button class="btn-line" id="add-field-btn">+ Add a custom field</button>
             <button class="btn-line" id="manage-fields-btn">Manage fields</button>
@@ -959,6 +1094,7 @@ function renderDetailView() {
   document.getElementById('add-field-btn').addEventListener('click', () => openAddFieldModal());
   document.getElementById('manage-fields-btn').addEventListener('click', () => openManageFieldsModal());
   document.getElementById('add-rel-btn').addEventListener('click', handleAddRelationship);
+  document.getElementById('add-loc-btn').addEventListener('click', handleAddCharacterLocation);
 
   const nameInput = document.getElementById('name-input');
   nameInput.addEventListener('change', async () => {
@@ -970,6 +1106,7 @@ function renderDetailView() {
   redrawTagRow();
   redrawFieldSections();
   redrawRelationships();
+  redrawCharacterLocations();
 }
 
 // ---- portrait / images ----
@@ -1432,6 +1569,384 @@ async function handleDeleteCharacter() {
   try {
     await api('DELETE', `/characters/${STATE.selectedDetail.id}`);
     await goGrid();
+  } catch (e) {
+    alert('Delete failed: ' + e.message);
+  }
+}
+
+// ---- character <-> location links (on the character detail page) ----
+// Deliberately lighter-weight than the Relationships editor above: no
+// reciprocal role catalog, so an existing link shows the location as a
+// plain (clickable) chip with an editable freeform role text, and only a
+// brand-new draft row needs a location picker at all.
+
+function redrawCharacterLocations() {
+  const d = STATE.selectedDetail;
+  const el = document.getElementById('char-locations-list');
+  if (!d._locDrafts) d._locDrafts = [];
+
+  const existingRows = (d.locations || []).map(cl => `
+    <div class="rel-row" data-key="l-${cl.id}">
+      <a class="chip" href="#" data-goto-loc="${cl.location_id}">${escapeHtml(cl.location_name || 'Unnamed')}</a>
+      <input data-role="loc-role" placeholder="Role (optional) — e.g. Resides in" value="${escapeHtml(cl.role || '')}">
+      <button class="rel-remove" data-role="loc-remove">&times;</button>
+    </div>`).join('');
+
+  const draftRows = d._locDrafts.map(dr => `
+    <div class="rel-row" data-key="d-${dr._draftId}">
+      <select data-role="loc-target">
+        <option value="">— choose location —</option>
+        ${STATE.locations.map(l => `<option value="${l.id}">${escapeHtml(l.name || 'Unnamed')}</option>`).join('')}
+      </select>
+      <input data-role="loc-role" placeholder="Role (optional) — e.g. Resides in" value="${escapeHtml(dr.role || '')}">
+      <button class="rel-remove" data-role="loc-remove">&times;</button>
+    </div>`).join('');
+
+  el.innerHTML = existingRows + draftRows;
+  if (!existingRows && !draftRows) el.innerHTML = '';
+
+  el.querySelectorAll('[data-goto-loc]').forEach(a => {
+    a.addEventListener('click', e => { e.preventDefault(); goLocationDetail(Number(a.dataset.gotoLoc)); });
+  });
+
+  el.querySelectorAll('.rel-row').forEach(row => {
+    const [kind, idStr] = row.dataset.key.split('-');
+    const isDraft = kind === 'd';
+    const linkId = isDraft ? null : Number(idStr);
+    const draftId = isDraft ? Number(idStr) : null;
+    const roleInput = row.querySelector('[data-role=loc-role]');
+    const targetSelect = row.querySelector('[data-role=loc-target]');
+
+    if (targetSelect) {
+      targetSelect.addEventListener('change', () => {
+        const locId = targetSelect.value ? Number(targetSelect.value) : null;
+        if (locId) commitCharacterLocationDraft(draftId, locId, roleInput.value.trim());
+      });
+    } else {
+      roleInput.addEventListener('change', () => saveCharacterLocationRole(linkId, roleInput.value.trim()));
+    }
+
+    row.querySelector('[data-role=loc-remove]').addEventListener('click', () => {
+      if (isDraft) { d._locDrafts = d._locDrafts.filter(x => x._draftId !== draftId); redrawCharacterLocations(); }
+      else removeCharacterLocation(linkId);
+    });
+  });
+}
+
+function handleAddCharacterLocation() {
+  const d = STATE.selectedDetail;
+  if (!d._locDrafts) d._locDrafts = [];
+  if (d._locDraftCounter === undefined) d._locDraftCounter = 0;
+  d._locDrafts.push({ _draftId: d._locDraftCounter++, role: '' });
+  redrawCharacterLocations();
+}
+
+async function commitCharacterLocationDraft(draftId, locationId, role) {
+  const d = STATE.selectedDetail;
+  try {
+    const res = await api('POST', '/character_locations', { character_id: d.id, location_id: locationId, role });
+    d._locDrafts = d._locDrafts.filter(x => x._draftId !== draftId);
+    d.locations = res.character.locations;
+    redrawCharacterLocations();
+  } catch (e) {
+    alert('Could not link location: ' + e.message);
+  }
+}
+
+async function saveCharacterLocationRole(linkId, role) {
+  const d = STATE.selectedDetail;
+  try {
+    const updated = await api('PUT', `/character_locations/${linkId}`, { role });
+    d.locations = updated.locations;
+  } catch (e) {
+    alert('Could not save role: ' + e.message);
+    redrawCharacterLocations();
+  }
+}
+
+async function removeCharacterLocation(linkId) {
+  const d = STATE.selectedDetail;
+  try {
+    await api('DELETE', `/character_locations/${linkId}`);
+    d.locations = d.locations.filter(cl => cl.id !== linkId);
+    redrawCharacterLocations();
+  } catch (e) {
+    alert('Could not remove link: ' + e.message);
+  }
+}
+
+// ---------------------------------------------------------------- location detail view
+
+function renderLocationDetailView() {
+  const l = STATE.selectedLocationDetail;
+  const main = document.getElementById('main-content');
+  main.innerHTML = `
+    <div class="detail-shell">
+      <div class="detail-topbar">
+        <button class="btn-line" id="loc-back-btn">&larr; All locations</button>
+        <button class="btn-line delete-btn" id="delete-loc-btn">Delete</button>
+      </div>
+      <div class="detail-cols">
+        <div class="detail-left">
+          <div class="detail-portrait" id="loc-portrait"></div>
+          <div id="loc-image-controls"></div>
+        </div>
+        <div class="detail-right">
+          <input id="loc-name-input" placeholder="Location name" value="${escapeHtml(l.name)}">
+          <div id="loc-tag-row"></div>
+          <div class="field-section">
+            <h3>Details</h3>
+            <div class="fields-grid">
+              <div>
+                <label class="field-label">Type</label>
+                <input id="loc-type-input" class="field-input" placeholder="City, Region, Building…" value="${escapeHtml(l.location_type)}">
+              </div>
+              <div>
+                <label class="field-label">Part of</label>
+                <select id="loc-parent-select" class="field-select">
+                  <option value="">— none (top-level) —</option>
+                  ${STATE.locations.filter(o => o.id !== l.id).map(o =>
+                    `<option value="${o.id}" ${l.parent && l.parent.id === o.id ? 'selected' : ''}>${escapeHtml(o.name || 'Unnamed')}</option>`
+                  ).join('')}
+                </select>
+              </div>
+              <div class="span-all">
+                <label class="field-label">Description</label>
+                <textarea id="loc-desc-input" class="field-textarea" rows="5">${escapeHtml(l.description)}</textarea>
+              </div>
+            </div>
+          </div>
+          <div class="field-section" id="loc-children-section" style="${l.children.length ? '' : 'display:none'}">
+            <h3>Sub-locations</h3>
+            <div id="loc-children-list"></div>
+          </div>
+          <div class="field-section">
+            <h3>Characters here</h3>
+            <div id="loc-characters-list"></div>
+            <button class="add-rel-btn" id="add-loc-char-btn">+ Link a character</button>
+          </div>
+          <p class="detail-hint">Changes save automatically.</p>
+        </div>
+      </div>
+    </div>`;
+
+  document.getElementById('loc-back-btn').addEventListener('click', goLocations);
+  document.getElementById('delete-loc-btn').addEventListener('click', handleDeleteLocation);
+  document.getElementById('add-loc-char-btn').addEventListener('click', handleAddLocationCharacter);
+
+  document.getElementById('loc-name-input').addEventListener('change', e => saveLocationField('name', e.target.value));
+  document.getElementById('loc-type-input').addEventListener('change', e => saveLocationField('location_type', e.target.value));
+  document.getElementById('loc-desc-input').addEventListener('change', e => saveLocationField('description', e.target.value));
+  document.getElementById('loc-parent-select').addEventListener('change', e => {
+    saveLocationField('parent_location_id', e.target.value ? Number(e.target.value) : null);
+  });
+
+  redrawLocationPortrait();
+  redrawLocationTagRow();
+  redrawLocationChildren();
+  redrawLocationCharacters();
+}
+
+function redrawLocationPortrait() {
+  const l = STATE.selectedLocationDetail;
+  const portraitEl = document.getElementById('loc-portrait');
+  portraitEl.innerHTML = l.image_url
+    ? `<img src="${escapeHtml(l.image_url)}" alt="">`
+    : `<div class="card-placeholder"><span>${escapeHtml(initials(l.name))}</span></div>`;
+
+  const controls = document.getElementById('loc-image-controls');
+  controls.innerHTML = `
+    <label class="btn-line" style="display:inline-flex;margin-top:10px">
+      ${l.image_url ? 'Replace image' : 'Upload image'}
+      <input type="file" accept="image/jpeg,image/png,image/webp" style="display:none" id="loc-image-input">
+    </label>
+    ${l.image_url ? `<button class="btn-line" id="loc-image-remove-btn" style="margin-top:10px;margin-left:8px">Remove</button>` : ''}`;
+  document.getElementById('loc-image-input').addEventListener('change', e => {
+    if (e.target.files.length) uploadLocationImage(e.target.files[0]);
+  });
+  const removeBtn = document.getElementById('loc-image-remove-btn');
+  if (removeBtn) removeBtn.addEventListener('click', removeLocationImage);
+}
+
+async function uploadLocationImage(file) {
+  if (!/^image\/(jpeg|png|webp)$/.test(file.type)) { alert(`"${file.name}" isn't a JPEG, PNG, or WebP image`); return; }
+  if (file.size > 8 * 1024 * 1024) { alert(`"${file.name}" is larger than 8MB`); return; }
+  const fd = new FormData();
+  fd.append('file', file);
+  try {
+    STATE.selectedLocationDetail = await api('POST', `/locations/${STATE.selectedLocationDetail.id}/image`, fd);
+    redrawLocationPortrait();
+  } catch (e) {
+    alert('Upload failed: ' + e.message);
+  }
+}
+
+async function removeLocationImage() {
+  try {
+    STATE.selectedLocationDetail = await api('DELETE', `/locations/${STATE.selectedLocationDetail.id}/image`);
+    redrawLocationPortrait();
+  } catch (e) {
+    alert('Could not remove image: ' + e.message);
+  }
+}
+
+function redrawLocationTagRow() {
+  const l = STATE.selectedLocationDetail;
+  const el = document.getElementById('loc-tag-row');
+  el.innerHTML = (l.tags || []).map(t =>
+    `<span class="chip">${escapeHtml(t)}<button data-tag="${escapeHtml(t)}">&times;</button></span>`
+  ).join('') + `<input id="loc-tag-input" placeholder="+ tag">`;
+
+  el.querySelectorAll('.chip button').forEach(btn => {
+    btn.addEventListener('click', () => saveLocationTags((l.tags || []).filter(t => t !== btn.dataset.tag)));
+  });
+  document.getElementById('loc-tag-input').addEventListener('keydown', e => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const v = e.target.value.trim();
+      if (v && !(l.tags || []).includes(v)) saveLocationTags([...(l.tags || []), v]);
+      e.target.value = '';
+    }
+  });
+}
+
+async function saveLocationTags(tags) {
+  try {
+    STATE.selectedLocationDetail = await api('PUT', `/locations/${STATE.selectedLocationDetail.id}`, { tags });
+    redrawLocationTagRow();
+  } catch (e) {
+    alert('Could not save tags: ' + e.message);
+  }
+}
+
+async function saveLocationField(key, value) {
+  const l = STATE.selectedLocationDetail;
+  try {
+    STATE.selectedLocationDetail = await api('PUT', `/locations/${l.id}`, { [key]: value });
+    if (key === 'parent_location_id') renderLocationDetailView();  // parent/children breadcrumbs shift
+  } catch (e) {
+    alert('Could not save: ' + e.message);
+    renderLocationDetailView();
+  }
+}
+
+function redrawLocationChildren() {
+  const l = STATE.selectedLocationDetail;
+  const section = document.getElementById('loc-children-section');
+  const el = document.getElementById('loc-children-list');
+  if (!l.children.length) { section.style.display = 'none'; return; }
+  section.style.display = '';
+  el.innerHTML = l.children.map(c => `<a class="chip" href="#" data-goto-loc="${c.id}">${escapeHtml(c.name || 'Unnamed')}</a>`).join(' ');
+  el.querySelectorAll('[data-goto-loc]').forEach(a => {
+    a.addEventListener('click', e => { e.preventDefault(); goLocationDetail(Number(a.dataset.gotoLoc)); });
+  });
+}
+
+// ---- characters linked to this location ----
+
+function redrawLocationCharacters() {
+  const l = STATE.selectedLocationDetail;
+  const el = document.getElementById('loc-characters-list');
+  if (!l._charDrafts) l._charDrafts = [];
+  const otherChars = STATE.characters;
+
+  const existingRows = (l.characters || []).map(lc => `
+    <div class="rel-row" data-key="l-${lc.id}">
+      <a class="chip" href="#" data-goto-char="${lc.character_id}">${escapeHtml(lc.character_name || 'Unnamed')}</a>
+      <input data-role="char-role" placeholder="Role (optional) — e.g. Resides in" value="${escapeHtml(lc.role || '')}">
+      <button class="rel-remove" data-role="char-remove">&times;</button>
+    </div>`).join('');
+
+  const draftRows = l._charDrafts.map(dr => `
+    <div class="rel-row" data-key="d-${dr._draftId}">
+      <select data-role="char-target">
+        <option value="">— choose character —</option>
+        ${otherChars.map(c => `<option value="${c.id}">${escapeHtml(c.name || 'Unnamed')}</option>`).join('')}
+      </select>
+      <input data-role="char-role" placeholder="Role (optional) — e.g. Resides in" value="${escapeHtml(dr.role || '')}">
+      <button class="rel-remove" data-role="char-remove">&times;</button>
+    </div>`).join('');
+
+  el.innerHTML = existingRows + draftRows;
+
+  el.querySelectorAll('[data-goto-char]').forEach(a => {
+    a.addEventListener('click', e => { e.preventDefault(); goDetail(Number(a.dataset.gotoChar)); });
+  });
+
+  el.querySelectorAll('.rel-row').forEach(row => {
+    const [kind, idStr] = row.dataset.key.split('-');
+    const isDraft = kind === 'd';
+    const linkId = isDraft ? null : Number(idStr);
+    const draftId = isDraft ? Number(idStr) : null;
+    const roleInput = row.querySelector('[data-role=char-role]');
+    const targetSelect = row.querySelector('[data-role=char-target]');
+
+    if (targetSelect) {
+      targetSelect.addEventListener('change', () => {
+        const charId = targetSelect.value ? Number(targetSelect.value) : null;
+        if (charId) commitLocationCharacterDraft(draftId, charId, roleInput.value.trim());
+      });
+    } else {
+      roleInput.addEventListener('change', () => saveLocationCharacterRole(linkId, roleInput.value.trim()));
+    }
+
+    row.querySelector('[data-role=char-remove]').addEventListener('click', () => {
+      if (isDraft) { l._charDrafts = l._charDrafts.filter(x => x._draftId !== draftId); redrawLocationCharacters(); }
+      else removeLocationCharacter(linkId);
+    });
+  });
+}
+
+function handleAddLocationCharacter() {
+  const l = STATE.selectedLocationDetail;
+  if (!l._charDrafts) l._charDrafts = [];
+  if (l._charDraftCounter === undefined) l._charDraftCounter = 0;
+  l._charDrafts.push({ _draftId: l._charDraftCounter++, role: '' });
+  redrawLocationCharacters();
+}
+
+async function commitLocationCharacterDraft(draftId, characterId, role) {
+  const l = STATE.selectedLocationDetail;
+  try {
+    await api('POST', '/character_locations', { character_id: characterId, location_id: l.id, role });
+    l._charDrafts = l._charDrafts.filter(x => x._draftId !== draftId);
+    STATE.selectedLocationDetail = await api('GET', `/locations/${l.id}`);
+    STATE.selectedLocationDetail._charDrafts = l._charDrafts;
+    redrawLocationCharacters();
+  } catch (e) {
+    alert('Could not link character: ' + e.message);
+  }
+}
+
+async function saveLocationCharacterRole(linkId, role) {
+  const l = STATE.selectedLocationDetail;
+  try {
+    await api('PUT', `/character_locations/${linkId}`, { role });
+    const row = (l.characters || []).find(lc => lc.id === linkId);
+    if (row) row.role = role;
+  } catch (e) {
+    alert('Could not save role: ' + e.message);
+    redrawLocationCharacters();
+  }
+}
+
+async function removeLocationCharacter(linkId) {
+  const l = STATE.selectedLocationDetail;
+  try {
+    await api('DELETE', `/character_locations/${linkId}`);
+    l.characters = l.characters.filter(lc => lc.id !== linkId);
+    redrawLocationCharacters();
+  } catch (e) {
+    alert('Could not remove link: ' + e.message);
+  }
+}
+
+async function handleDeleteLocation() {
+  const l = STATE.selectedLocationDetail;
+  if (!confirm('Delete this location permanently? Sub-locations will become top-level.')) return;
+  try {
+    await api('DELETE', `/locations/${l.id}`);
+    await goLocations();
   } catch (e) {
     alert('Delete failed: ' + e.message);
   }
