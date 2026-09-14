@@ -1260,7 +1260,14 @@ async function deleteEvent(ev) {
 async function moveEvent(ev, direction) {
   try {
     await api('PUT', `/events/${ev.id}/move`, { direction });
-    STATE.events = await api('GET', '/events');
+    const fresh = await api('GET', '/events');
+    // Merge into the existing per-event objects (by id) rather than
+    // replacing the array outright — same reasoning as the Object.assign
+    // fix elsewhere: an unrelated card's in-progress "+ Link a character"
+    // draft lives only on its JS object, and a wholesale replace would
+    // silently drop it out from under the user.
+    const byId = new Map(STATE.events.map(e => [e.id, e]));
+    STATE.events = fresh.map(f => Object.assign(byId.get(f.id) || {}, f));
     redrawTimelineList();
   } catch (e) {
     alert('Could not reorder: ' + e.message);
@@ -1491,7 +1498,7 @@ async function uploadImages(fileList) {
   const fd = new FormData();
   for (const f of fileList) fd.append('files', f);
   try {
-    STATE.selectedDetail = await api('POST', `/characters/${STATE.selectedDetail.id}/images`, fd);
+    Object.assign(STATE.selectedDetail, await api('POST', `/characters/${STATE.selectedDetail.id}/images`, fd));
     redrawPortraitBlock();
   } catch (e) {
     alert('Upload failed: ' + e.message);
@@ -1500,7 +1507,7 @@ async function uploadImages(fileList) {
 
 async function setPrimaryImage(imageId) {
   try {
-    STATE.selectedDetail = await api('PUT', `/characters/${STATE.selectedDetail.id}/images/${imageId}/primary`);
+    Object.assign(STATE.selectedDetail, await api('PUT', `/characters/${STATE.selectedDetail.id}/images/${imageId}/primary`));
     redrawPortraitBlock();
   } catch (e) {
     alert('Could not set primary image: ' + e.message);
@@ -1509,7 +1516,7 @@ async function setPrimaryImage(imageId) {
 
 async function removeImage(imageId) {
   try {
-    STATE.selectedDetail = await api('DELETE', `/characters/${STATE.selectedDetail.id}/images/${imageId}`);
+    Object.assign(STATE.selectedDetail, await api('DELETE', `/characters/${STATE.selectedDetail.id}/images/${imageId}`));
     redrawPortraitBlock();
   } catch (e) {
     alert('Could not remove image: ' + e.message);
@@ -1543,7 +1550,7 @@ async function addTag(tag) {
   if ((d.tags || []).includes(tag)) return;
   const newTags = [...(d.tags || []), tag];
   try {
-    STATE.selectedDetail = await api('PUT', `/characters/${d.id}`, { tags: newTags });
+    Object.assign(STATE.selectedDetail, await api('PUT', `/characters/${d.id}`, { tags: newTags }));
     redrawTagRow();
   } catch (e) {
     alert('Could not add tag: ' + e.message);
@@ -1554,7 +1561,7 @@ async function removeTag(tag) {
   const d = STATE.selectedDetail;
   const newTags = (d.tags || []).filter(t => t !== tag);
   try {
-    STATE.selectedDetail = await api('PUT', `/characters/${d.id}`, { tags: newTags });
+    Object.assign(STATE.selectedDetail, await api('PUT', `/characters/${d.id}`, { tags: newTags }));
     redrawTagRow();
   } catch (e) {
     alert('Could not remove tag: ' + e.message);
@@ -2222,7 +2229,7 @@ async function uploadLocationImage(file) {
   const fd = new FormData();
   fd.append('file', file);
   try {
-    STATE.selectedLocationDetail = await api('POST', `/locations/${STATE.selectedLocationDetail.id}/image`, fd);
+    Object.assign(STATE.selectedLocationDetail, await api('POST', `/locations/${STATE.selectedLocationDetail.id}/image`, fd));
     redrawLocationPortrait();
   } catch (e) {
     alert('Upload failed: ' + e.message);
@@ -2231,7 +2238,7 @@ async function uploadLocationImage(file) {
 
 async function removeLocationImage() {
   try {
-    STATE.selectedLocationDetail = await api('DELETE', `/locations/${STATE.selectedLocationDetail.id}/image`);
+    Object.assign(STATE.selectedLocationDetail, await api('DELETE', `/locations/${STATE.selectedLocationDetail.id}/image`));
     redrawLocationPortrait();
   } catch (e) {
     alert('Could not remove image: ' + e.message);
@@ -2260,7 +2267,7 @@ function redrawLocationTagRow() {
 
 async function saveLocationTags(tags) {
   try {
-    STATE.selectedLocationDetail = await api('PUT', `/locations/${STATE.selectedLocationDetail.id}`, { tags });
+    Object.assign(STATE.selectedLocationDetail, await api('PUT', `/locations/${STATE.selectedLocationDetail.id}`, { tags }));
     redrawLocationTagRow();
   } catch (e) {
     alert('Could not save tags: ' + e.message);
@@ -2270,7 +2277,7 @@ async function saveLocationTags(tags) {
 async function saveLocationField(key, value) {
   const l = STATE.selectedLocationDetail;
   try {
-    STATE.selectedLocationDetail = await api('PUT', `/locations/${l.id}`, { [key]: value });
+    Object.assign(l, await api('PUT', `/locations/${l.id}`, { [key]: value }));
     if (key === 'parent_location_id') renderLocationDetailView();  // parent/children breadcrumbs shift
   } catch (e) {
     alert('Could not save: ' + e.message);
@@ -2370,8 +2377,7 @@ async function commitLocationCharacterDraft(draftId, characterId, role) {
   try {
     await api('POST', '/character_locations', { character_id: characterId, location_id: l.id, role });
     l._charDrafts = l._charDrafts.filter(x => x._draftId !== draftId);
-    STATE.selectedLocationDetail = await api('GET', `/locations/${l.id}`);
-    STATE.selectedLocationDetail._charDrafts = l._charDrafts;
+    Object.assign(l, await api('GET', `/locations/${l.id}`));
     redrawLocationCharacters();
   } catch (e) {
     alert('Could not link character: ' + e.message);
