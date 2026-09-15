@@ -295,6 +295,7 @@ a.chip { text-decoration: none; color: inherit; }
   </div>
   <input id="search-input" placeholder="Search name, role, species, tag…">
   <div class="theme-toggle" id="theme-toggle"></div>
+  <button class="btn-line" id="import-btn" title="Import a document — characters, locations, and timeline events">Import</button>
   <button class="btn-line" id="backup-btn" title="Backup status"><span class="dot" id="backup-dot"></span>Backup</button>
   <button class="btn-line" id="user-btn" title="Switch user"></button>
 </header>
@@ -434,6 +435,7 @@ function buildHeaderOnce() {
     if (STATE.view === 'grid') renderGridResults();
     else if (STATE.view === 'locations') renderLocationsResults();
   });
+  document.getElementById('import-btn').addEventListener('click', goImport);
   document.getElementById('backup-btn').addEventListener('click', openBackupModal);
   document.getElementById('user-btn').addEventListener('click', async () => {
     try { await api('POST', '/logout'); } catch (e) {}
@@ -501,6 +503,16 @@ function updateBackupDot() {
     : 'Not backed up yet';
 }
 
+function updateImportButton() {
+  const configured = !!(STATE.status && STATE.status.import_configured);
+  const btn = document.getElementById('import-btn');
+  btn.disabled = !configured;
+  btn.style.opacity = configured ? '' : '.5';
+  btn.title = configured
+    ? 'Import a document — characters, locations, and timeline events'
+    : 'Not configured — add ANTHROPIC_API_KEY';
+}
+
 // ---------------------------------------------------------------- project switcher
 
 function renderProjectSwitcherButton() {
@@ -528,17 +540,13 @@ function drawProjectPopover() {
     </button>`).join('') + `
     <div class="pp-divider"></div>
     <button class="pp-action" id="pp-new">+ New project</button>
-    <button class="pp-action" id="pp-settings">Project settings…</button>
-    <button class="pp-action" id="pp-import" ${STATE.status && !STATE.status.import_configured ? 'disabled title="Not configured — add ANTHROPIC_API_KEY"' : ''}>Import document…</button>`;
+    <button class="pp-action" id="pp-settings">Project settings…</button>`;
 
   pop.querySelectorAll('.pp-item').forEach(btn => {
     btn.addEventListener('click', () => switchProject(Number(btn.dataset.id)));
   });
   document.getElementById('pp-new').addEventListener('click', () => { closeProjectPopover(); openNewProjectModal(); });
   document.getElementById('pp-settings').addEventListener('click', () => { closeProjectPopover(); openProjectSettingsModal(); });
-  const importBtn = document.getElementById('pp-import');
-  if (STATE.status && !STATE.status.import_configured) importBtn.style.opacity = '.5';
-  importBtn.addEventListener('click', () => { closeProjectPopover(); goImport(); });
 }
 
 async function switchProject(id) {
@@ -791,6 +799,7 @@ async function showLoginView() {
 async function loadStatus() {
   try { STATE.status = await api('GET', '/status'); } catch (e) { STATE.status = null; }
   updateBackupDot();
+  updateImportButton();
 }
 
 async function goGrid() {
