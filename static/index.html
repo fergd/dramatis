@@ -2708,7 +2708,7 @@ function renderImportUpload() {
   main.innerHTML = `
     <div class="import-shell">
       <h1>Import a document</h1>
-      <p class="lede">Upload a dossier and Claude extracts project details, characters, fields, and relationships into an editable preview — nothing is saved until you confirm. Importing into <strong>${escapeHtml(STATE.project.title)}</strong>.</p>
+      <p class="lede">Upload a dossier (or paste a brainstorm, notes, or manuscript excerpt) and Claude extracts characters, relationships, locations, and timeline events into an editable preview — nothing is saved until you confirm. Importing into <strong>${escapeHtml(STATE.project.title)}</strong>.</p>
       <label class="import-dropzone" id="import-dropzone">
         <div id="import-dropzone-text">Click to choose a file</div>
         <div class="hint">.md, .txt, .docx, or .pdf</div>
@@ -2773,6 +2773,9 @@ function initImportReviewState(proposal) {
   s.newFieldLabel = (proposal.new_fields || []).map(f => f.label);
   s.newFieldType = (proposal.new_fields || []).map(f => TYPE_LABELS[f.type] ? f.type : 'text');
   s.relInclude = (proposal.relationships || []).map(() => true);
+  s.locInclude = (proposal.locations || []).map(() => true);
+  s.charLocInclude = (proposal.character_locations || []).map(() => true);
+  s.eventInclude = (proposal.events || []).map(() => true);
 }
 
 function renderImportReview() {
@@ -2841,6 +2844,33 @@ function renderImportReview() {
     </div>`;
   }).join('');
 
+  const locsHTML = (p.locations || []).length === 0 ? `<p class="import-empty-note">No locations proposed.</p>` : p.locations.map((l, i) => `
+    <div class="import-item">
+      <input type="checkbox" data-role="loc-include" data-li="${i}" ${s.locInclude[i] ? 'checked' : ''}>
+      <div class="import-item-body">
+        <div class="import-item-title">${escapeHtml(l.name || 'Unnamed')}<span class="import-badge ${l.match === 'existing' ? 'existing' : 'new'}">${l.match === 'existing' ? 'matches existing' : 'new'}</span></div>
+        <div class="import-field-row"><span class="field-preview">${escapeHtml([l.location_type, l.parent_name ? `part of ${l.parent_name}` : null].filter(Boolean).join(' · ') || '—')}</span></div>
+      </div>
+    </div>`).join('');
+
+  const charLocsHTML = (p.character_locations || []).length === 0 ? `<p class="import-empty-note">No character-location links proposed.</p>` : p.character_locations.map((cl, i) => `
+    <div class="import-item">
+      <input type="checkbox" data-role="charloc-include" data-cli="${i}" ${s.charLocInclude[i] ? 'checked' : ''}>
+      <div class="import-item-body">
+        <div class="import-item-title">${escapeHtml(cl.character || '')} <span style="color:var(--muted);font-weight:400">&rarr;</span> ${escapeHtml(cl.location || '')}</div>
+        ${cl.role ? `<div class="import-field-row"><span class="field-preview">${escapeHtml(cl.role)}</span></div>` : ''}
+      </div>
+    </div>`).join('');
+
+  const eventsHTML = (p.events || []).length === 0 ? `<p class="import-empty-note">No timeline events proposed.</p>` : p.events.map((ev, i) => `
+    <div class="import-item">
+      <input type="checkbox" data-role="event-include" data-ei="${i}" ${s.eventInclude[i] ? 'checked' : ''}>
+      <div class="import-item-body">
+        <div class="import-item-title">${escapeHtml(ev.title || 'Untitled')}${ev.date_text ? ` <span style="color:var(--muted);font-weight:400">— ${escapeHtml(ev.date_text)}</span>` : ''}</div>
+        <div class="import-field-row"><span class="field-preview">${escapeHtml([ev.category, ev.location, (ev.characters || []).map(c => c.name).join(', ')].filter(Boolean).join(' · '))}</span></div>
+      </div>
+    </div>`).join('');
+
   main.innerHTML = `
     <div class="import-shell">
       <h1>Review import</h1>
@@ -2849,6 +2879,9 @@ function renderImportReview() {
       <div class="import-section"><h2>Characters</h2>${charsHTML}</div>
       <div class="import-section"><h2>New fields</h2>${newFieldsHTML}</div>
       <div class="import-section"><h2>Relationships</h2>${relsHTML}</div>
+      <div class="import-section"><h2>Locations</h2>${locsHTML}</div>
+      <div class="import-section"><h2>Character &harr; Location links</h2>${charLocsHTML}</div>
+      <div class="import-section"><h2>Timeline events</h2>${eventsHTML}</div>
       <div class="import-actions">
         <button class="btn-line" id="import-back">Cancel</button>
         <button class="btn-solid" id="import-commit-btn">Confirm import</button>
@@ -2866,6 +2899,9 @@ function renderImportReview() {
   main.querySelectorAll('[data-role=newfield-label]').forEach(el => el.addEventListener('input', e => { s.newFieldLabel[Number(e.target.dataset.fi)] = e.target.value; }));
   main.querySelectorAll('[data-role=newfield-type]').forEach(el => el.addEventListener('change', e => { s.newFieldType[Number(e.target.dataset.fi)] = e.target.value; }));
   main.querySelectorAll('[data-role=rel-include]').forEach(el => el.addEventListener('change', e => { s.relInclude[Number(e.target.dataset.ri)] = e.target.checked; }));
+  main.querySelectorAll('[data-role=loc-include]').forEach(el => el.addEventListener('change', e => { s.locInclude[Number(e.target.dataset.li)] = e.target.checked; }));
+  main.querySelectorAll('[data-role=charloc-include]').forEach(el => el.addEventListener('change', e => { s.charLocInclude[Number(e.target.dataset.cli)] = e.target.checked; }));
+  main.querySelectorAll('[data-role=event-include]').forEach(el => el.addEventListener('change', e => { s.eventInclude[Number(e.target.dataset.ei)] = e.target.checked; }));
 
   document.getElementById('import-commit-btn').addEventListener('click', runImportCommit);
 }
@@ -2873,7 +2909,10 @@ function renderImportReview() {
 async function runImportCommit() {
   const s = STATE.importState;
   const p = s.proposal;
-  const body = { project_meta: [], new_fields: [], characters: [], relationships: [] };
+  const body = {
+    project_meta: [], new_fields: [], characters: [], relationships: [],
+    locations: [], character_locations: [], events: [],
+  };
 
   Object.keys(p.project_meta || {}).forEach(key => {
     if (s.metaApply[key] === false) return;
@@ -2903,6 +2942,33 @@ async function runImportCommit() {
     body.relationships.push({
       from_name: r.from, to_name: r.to, role: r.role_key,
       custom_label: r.custom_label, custom_inverse_label: r.custom_inverse_label, category: r.category,
+    });
+  });
+
+  const includedLocationNames = new Set();
+  (p.locations || []).forEach((l, i) => {
+    if (!s.locInclude[i]) return;
+    includedLocationNames.add((l.name || '').trim().toLowerCase());
+    body.locations.push({
+      name: l.name, match: l.match, existing_id: l.existing_id,
+      location_type: l.location_type, description: l.description, parent_name: l.parent_name,
+    });
+  });
+
+  (p.character_locations || []).forEach((cl, i) => {
+    if (!s.charLocInclude[i]) return;
+    if (!includedNames.has((cl.character || '').trim().toLowerCase())) return;
+    if (!includedLocationNames.has((cl.location || '').trim().toLowerCase())) return;
+    body.character_locations.push({ character_name: cl.character, location_name: cl.location, role: cl.role });
+  });
+
+  (p.events || []).forEach((ev, i) => {
+    if (!s.eventInclude[i]) return;
+    const characters = (ev.characters || []).filter(c => includedNames.has((c.name || '').trim().toLowerCase()));
+    const locationIncluded = ev.location && includedLocationNames.has((ev.location || '').trim().toLowerCase());
+    body.events.push({
+      title: ev.title, date_text: ev.date_text, category: ev.category, description: ev.description,
+      location_name: locationIncluded ? ev.location : null, characters,
     });
   });
 

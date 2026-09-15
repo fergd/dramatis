@@ -14,6 +14,7 @@ zamak-ledger's vision_extract.py error-handling/JSON-parsing pattern.
 
 import json
 import os
+from typing import Optional
 
 import anthropic
 
@@ -102,15 +103,21 @@ def _catalog_prompt_block(role_catalog: dict) -> str:
     return "\n".join(lines)
 
 
-def _build_prompt(text: str, existing_fields: list, existing_character_names: list, role_catalog: dict) -> str:
+def _build_prompt(
+    text: str, existing_fields: list, existing_character_names: list, role_catalog: dict,
+    existing_location_names: list, event_categories: list,
+) -> str:
     fields_line = ", ".join(existing_fields) if existing_fields else "(none yet)"
     names_line = ", ".join(existing_character_names) if existing_character_names else "(none yet)"
+    locations_line = ", ".join(existing_location_names) if existing_location_names else "(none yet)"
+    categories_line = ", ".join(event_categories)
     catalog_block = _catalog_prompt_block(role_catalog)
 
-    return f"""You are extracting structured data from a novel-writing dossier for \
-Dramatis, a character-profile catalog. Read the document below and return ONLY a \
-JSON object — no preamble, no markdown fences, just the raw JSON — in exactly this \
-shape:
+    return f"""You are extracting structured data from a novel-writing dossier (or a \
+freeform brainstorm/notes dump — treat prose, outlines, and loose notes the same way) \
+for Dramatis, a character/location/timeline catalog. Read the document below and \
+return ONLY a JSON object — no preamble, no markdown fences, just the raw JSON — in \
+exactly this shape:
 
 {{
   "project_meta": {{
@@ -131,6 +138,20 @@ shape:
     {{ "from": "Mikka Humboldt", "to": "Zyanya Mariposa", "role": "custom",
        "custom_label_from_to": "Buyer", "custom_label_to_from": "Supplier",
        "category": "Professional", "note": "the Ascent supply arrangement" }}
+  ],
+  "locations": [
+    {{ "name": "Wellspring Church", "location_type": "Building",
+       "description": "...", "parent_name": "Aveth City" }}
+  ],
+  "character_locations": [
+    {{ "character": "Dean Mercer", "location": "Wellspring Church", "role": "Pastors" }}
+  ],
+  "events": [
+    {{
+      "title": "The Founding", "date_text": "Year 0", "category": "Political",
+      "description": "...", "location": "Wellspring Church",
+      "characters": [ {{ "name": "Dean Mercer", "role": "Founder" }} ]
+    }}
   ]
 }}
 
@@ -157,8 +178,29 @@ case-insensitive), else "new". A character mentioned only in passing (e.g. named
 another character's section but never given their own) should still appear in \
 "characters" with just a name and whatever fields are known, so relationships \
 resolve — don't drop them.
-- Never invent facts. If a field isn't present for a character, omit that key \
-entirely rather than guessing or writing a placeholder.
+- Extract "locations" for named places the story actually uses as a setting or a \
+character's home/workplace/domain — not every place name mentioned in passing. This \
+project's existing locations are: {locations_line} — reuse an existing name \
+(case-insensitive) rather than proposing a near-duplicate. "parent_name" nests a \
+location inside a broader one also present in "locations" (e.g. a building inside \
+its city) — omit it (or use null) when the location is top-level or its container \
+isn't named in the document. "location_type" is a short free-text label ("City", \
+"Building", "Region", "Ship", ...) — omit if genuinely unclear.
+- Extract "character_locations" only for a real, stated association (born in, \
+resides in, rules over, works at) — never just because a scene happens to be set \
+somewhere. "role" is short free text describing the association; omit it if the \
+document doesn't say more than "is associated with this place."
+- Extract "events" for the story's significant narrative moments (meetings, \
+discoveries, conflicts, turning points, deaths, founding of something) — not every \
+sentence of action. "date_text" is whatever time reference the document itself gives \
+(a year, a season, "three days later") — use "" if none is given, never invent one. \
+"category" must be exactly one of: {categories_line} — pick "Other" rather than \
+forcing a bad fit. "location" is the location name if the scene names one, else omit \
+it. "characters" lists everyone meaningfully involved, each with an optional "role" \
+(e.g. "Witness", "Instigator") — omit "role" when the document doesn't distinguish it.
+- Never invent facts. If a field isn't present for a character, or a detail isn't \
+present for a location/event, omit that key entirely rather than guessing or writing \
+a placeholder.
 
 Document:
 ---
@@ -166,19 +208,27 @@ Document:
 ---"""
 
 
-def extract_dossier(text: str, existing_fields: list, existing_character_names: list, role_catalog: dict) -> dict:
+def extract_dossier(
+    text: str, existing_fields: list, existing_character_names: list, role_catalog: dict,
+    existing_location_names: Optional[list] = None, event_categories: Optional[list] = None,
+) -> dict:
     """existing_fields: list of field labels already in the active project (for
-    reuse-not-duplicate prompting). existing_character_names: list of character
+    reuse-not-duplicate prompting). existing_character_names / existing_location_names:
     names already in the active project (for match hinting only — the backend
     route re-resolves "match" authoritatively by real name lookup, see app.py's
-    /import/extract). role_catalog: RELATIONSHIP_ROLES dict.
+    /import/extract). role_catalog: RELATIONSHIP_ROLES dict. event_categories:
+    EVENT_CATEGORIES list (the fixed catalog an extracted event's category must
+    be one of).
 
     Raises RuntimeError with a clean, user-facing message on API failure or on
     a response too long to fit MAX_TOKENS (chunking is out of scope for this
     pass — see the Import spec's B2 scope note). Retries once on a JSON parse
     failure before raising, per the spec's B6 robustness requirement."""
     client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-    prompt = _build_prompt(text, existing_fields, existing_character_names, role_catalog)
+    prompt = _build_prompt(
+        text, existing_fields, existing_character_names, role_catalog,
+        existing_location_names or [], event_categories or ["Other"],
+    )
 
     last_raw = None
     for attempt in range(2):
@@ -213,6 +263,9 @@ def extract_dossier(text: str, existing_fields: list, existing_character_names: 
             result.setdefault("new_fields", [])
             result.setdefault("characters", [])
             result.setdefault("relationships", [])
+            result.setdefault("locations", [])
+            result.setdefault("character_locations", [])
+            result.setdefault("events", [])
             return result
         except json.JSONDecodeError:
             continue  # one retry, same prompt

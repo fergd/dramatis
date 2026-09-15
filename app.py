@@ -938,11 +938,43 @@ class ImportRelationshipIn(BaseModel):
     category: Optional[str] = None
 
 
+class ImportLocationIn(BaseModel):
+    name: str
+    match: str  # "new" | "existing" — matches ImportCharacterIn's shape
+    existing_id: Optional[int] = None
+    location_type: Optional[str] = ""
+    description: Optional[str] = ""
+    parent_name: Optional[str] = None  # resolved by name against this same batch's locations
+
+
+class ImportCharacterLocationIn(BaseModel):
+    character_name: str
+    location_name: str
+    role: Optional[str] = ""
+
+
+class ImportEventCharacterIn(BaseModel):
+    name: str
+    role: Optional[str] = ""
+
+
+class ImportEventIn(BaseModel):
+    title: str
+    date_text: Optional[str] = ""
+    category: Optional[str] = "Other"
+    description: Optional[str] = ""
+    location_name: Optional[str] = None
+    characters: Optional[list[ImportEventCharacterIn]] = None
+
+
 class ImportCommitIn(BaseModel):
     project_meta: Optional[list[ImportProjectMetaIn]] = None
     new_fields: Optional[list[ImportNewFieldIn]] = None
     characters: Optional[list[ImportCharacterIn]] = None
     relationships: Optional[list[ImportRelationshipIn]] = None
+    locations: Optional[list[ImportLocationIn]] = None
+    character_locations: Optional[list[ImportCharacterLocationIn]] = None
+    events: Optional[list[ImportEventIn]] = None
 
 
 # ---------------------------------------------------------------------------
@@ -2796,13 +2828,20 @@ async def import_extract_route(
         existing_char_rows = conn.execute(
             "SELECT id, name FROM characters WHERE project_id = ? ORDER BY id", (project_id,)
         ).fetchall()
+        existing_loc_rows = conn.execute(
+            "SELECT id, name FROM locations WHERE project_id = ? ORDER BY id", (project_id,)
+        ).fetchall()
         field_label_by_key = {f["key"]: f["label"] for f in _all_fields(conn, project_id)}
     finally:
         conn.close()
     existing_names = [r["name"] for r in existing_char_rows if r["name"]]
+    existing_location_names = [r["name"] for r in existing_loc_rows if r["name"]]
 
     try:
-        proposal = import_extract.extract_dossier(doc_text, existing_field_labels, existing_names, RELATIONSHIP_ROLES)
+        proposal = import_extract.extract_dossier(
+            doc_text, existing_field_labels, existing_names, RELATIONSHIP_ROLES,
+            existing_location_names, EVENT_CATEGORIES,
+        )
     except RuntimeError as e:
         raise HTTPException(status_code=502, detail=str(e))
 
@@ -2821,6 +2860,16 @@ async def import_extract_route(
                 c["match"] = "new"
                 c["existing_id"] = None
                 c["current_fields"] = {}
+
+        loc_name_to_row = {(r["name"] or "").strip().lower(): r for r in existing_loc_rows}
+        for loc in proposal["locations"]:
+            match_row = loc_name_to_row.get((loc.get("name") or "").strip().lower())
+            if match_row:
+                loc["match"] = "existing"
+                loc["existing_id"] = match_row["id"]
+            else:
+                loc["match"] = "new"
+                loc["existing_id"] = None
     finally:
         conn.close()
 
@@ -2830,6 +2879,10 @@ async def import_extract_route(
         )
         rel.update(resolved)
         rel.setdefault("category", "Other")
+
+    for ev in proposal["events"]:
+        if ev.get("category") not in EVENT_CATEGORIES:
+            ev["category"] = "Other"
 
     return proposal
 
@@ -2891,10 +2944,97 @@ def import_commit(body: ImportCommitIn, owner: str = Depends(get_current_owner),
                 category_override=rel.category,
             )
             relationships_created += 1
+
+        # Two passes, same reasoning as the locations restore path in
+        # restore_data: parent_name can point at another location in this
+        # same batch, so every row needs to exist before any parent link
+        # can be resolved.
+        name_to_location_id = {}
+        for loc in (body.locations or []):
+            if loc.match == "existing" and loc.existing_id:
+                row = _get_owned_location(conn, loc.existing_id, project_id)
+                if not row:
+                    continue  # stale/foreign id — skip rather than fail the whole commit
+                location_id = row["id"]
+            else:
+                now = _now()
+                cur = conn.execute(
+                    "INSERT INTO locations (project_id, name, location_type, description, "
+                    "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    (project_id, (loc.name or "").strip(), loc.location_type or "", loc.description or "", now, now),
+                )
+                location_id = cur.lastrowid
+                conn.commit()
+            name_to_location_id[(loc.name or "").strip().lower()] = location_id
+
+        for loc in (body.locations or []):
+            if not loc.parent_name:
+                continue
+            child_id = name_to_location_id.get((loc.name or "").strip().lower())
+            parent_id = name_to_location_id.get((loc.parent_name or "").strip().lower())
+            if child_id is not None and parent_id is not None and child_id != parent_id:
+                if not _would_create_cycle(conn, child_id, parent_id):
+                    conn.execute("UPDATE locations SET parent_location_id = ? WHERE id = ?", (parent_id, child_id))
+        conn.commit()
+
+        character_locations_created = 0
+        for cl in (body.character_locations or []):
+            char_id = name_to_id.get((cl.character_name or "").strip().lower())
+            loc_id = name_to_location_id.get((cl.location_name or "").strip().lower())
+            if char_id is None or loc_id is None:
+                continue  # either side was rejected in review, or didn't resolve — skip, don't fail
+            try:
+                conn.execute(
+                    "INSERT INTO character_locations (character_id, location_id, role) VALUES (?, ?, ?)",
+                    (char_id, loc_id, (cl.role or "").strip()),
+                )
+                character_locations_created += 1
+            except sqlite3.IntegrityError:
+                pass  # already linked (e.g. re-running an import) — not an error
+        conn.commit()
+
+        events_created = 0
+        for ev in (body.events or []):
+            category = ev.category if ev.category in EVENT_CATEGORIES else "Other"
+            loc_id = name_to_location_id.get((ev.location_name or "").strip().lower()) if ev.location_name else None
+            max_sort = conn.execute(
+                "SELECT COALESCE(MAX(sort_key), -1) FROM events WHERE project_id = ?", (project_id,)
+            ).fetchone()[0]
+            now = _now()
+            cur = conn.execute(
+                "INSERT INTO events (project_id, title, description, date_text, sort_key, category, "
+                "location_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    project_id, (ev.title or "").strip(), ev.description or "", ev.date_text or "",
+                    max_sort + 1, category, loc_id, now, now,
+                ),
+            )
+            event_id = cur.lastrowid
+            conn.commit()
+            events_created += 1
+            for ec in (ev.characters or []):
+                char_id = name_to_id.get((ec.name or "").strip().lower())
+                if char_id is None:
+                    continue
+                try:
+                    conn.execute(
+                        "INSERT INTO event_characters (event_id, character_id, role) VALUES (?, ?, ?)",
+                        (event_id, char_id, (ec.role or "").strip()),
+                    )
+                except sqlite3.IntegrityError:
+                    pass
+        conn.commit()
     finally:
         conn.close()
     schedule_backup()
-    return {"committed": True, "characters": len(name_to_id), "relationships": relationships_created}
+    return {
+        "committed": True,
+        "characters": len(name_to_id),
+        "relationships": relationships_created,
+        "locations": len(name_to_location_id),
+        "character_locations": character_locations_created,
+        "events": events_created,
+    }
 
 
 # ---------------------------------------------------------------------------
