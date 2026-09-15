@@ -24,9 +24,13 @@ MODEL = "claude-haiku-4-5-20251001"  # extraction is a structured-JSON text task
                                        # tenths of a cent per dossier (spec's own
                                        # cost guidance), matching zamak's cost model.
 
-MAX_TOKENS = 8192  # generous headroom for a full 6-character dossier's worth of
-                    # textarea-length field values — see _check_length below for
-                    # the explicit "too long" failure mode instead of silent truncation.
+MAX_TOKENS = 16000  # headroom for characters + relationships + locations +
+                     # character_locations + events all in one response — a
+                     # sub-1000-word locations-only dossier describing ~20 places
+                     # already blew past the original 8192 once locations/events
+                     # extraction was added. 16000 keeps this a plain (non-streaming)
+                     # request per the Claude API skill's default guidance; move to
+                     # streaming if a real-world dossier ever needs more than this.
 
 
 def is_configured() -> bool:
